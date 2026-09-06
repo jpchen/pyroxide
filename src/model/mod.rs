@@ -119,7 +119,14 @@ impl SiteLayout {
         let mut z = default.to_vec();
         for s in &self.sites {
             if let Some(v) = values.get(&s.name) {
-                assert_eq!(v.len(), s.len, "site '{}' has length {}, expected {}", s.name, v.len(), s.len);
+                assert_eq!(
+                    v.len(),
+                    s.len,
+                    "site '{}' has length {}, expected {}",
+                    s.name,
+                    v.len(),
+                    s.len
+                );
                 let u = transform::to_unconstrained(s.support, s.event_len, v);
                 z[s.offset..s.offset + s.unconstrained_len].copy_from_slice(&u);
             }
@@ -181,7 +188,13 @@ impl Handler<f64> for LayoutDiscovery {
         out
     }
     fn observe<D: Distribution<f64>>(&mut self, name: &str, dist: D, value: &[f64]) {
-        assert_eq!(value.len(), dist.len(), "observed site '{name}': value length {} != distribution length {}", value.len(), dist.len());
+        assert_eq!(
+            value.len(),
+            dist.len(),
+            "observed site '{name}': value length {} != distribution length {}",
+            value.len(),
+            dist.len()
+        );
     }
     fn factor(&mut self, _name: &str, _log_factor: f64) {}
     fn deterministic(&mut self, name: &str, _value: &[f64]) {
@@ -225,7 +238,11 @@ impl<'a, R: Real> Handler<R> for LogDensity<'a, R> {
     fn sample_vec<D: Distribution<R>>(&mut self, name: &str, dist: D) -> Vec<R> {
         let info = &self.layout.sites[self.site_idx];
         debug_assert_eq!(info.name, name, "site order changed between model executions");
-        debug_assert_eq!(info.len, dist.len(), "site '{name}' changed size between executions");
+        debug_assert_eq!(
+            info.len,
+            dist.len(),
+            "site '{name}' changed size between executions"
+        );
         self.site_idx += 1;
         let u = &self.z[info.offset..info.offset + info.unconstrained_len];
         let mut x = std::mem::take(&mut self.scratch);
@@ -331,7 +348,11 @@ impl<'a> Handler<f64> for Tracer<'a> {
     fn sample_vec<D: Distribution<f64>>(&mut self, name: &str, dist: D) -> Vec<f64> {
         let value = match self.values.and_then(|v| v.get(name)) {
             Some(v) => {
-                assert_eq!(v.len(), dist.len(), "replayed value for '{name}' has wrong length");
+                assert_eq!(
+                    v.len(),
+                    dist.len(),
+                    "replayed value for '{name}' has wrong length"
+                );
                 v.clone()
             }
             None => dist.sample_vec(self.rng),

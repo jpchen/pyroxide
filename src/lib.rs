@@ -12,6 +12,12 @@
 //!
 //! See `docs/DESIGN.md` in the repository for the design rationale.
 
+#![allow(
+    clippy::needless_range_loop,
+    clippy::type_complexity,
+    clippy::too_many_arguments
+)]
+
 pub mod ad;
 pub mod diagnostics;
 pub mod dist;
@@ -26,6 +32,8 @@ pub use ad::{Real, Var};
 pub mod prelude {
     pub use crate::ad::{Real, Var};
     pub use crate::dist::*;
-    pub use crate::infer::{FnPotential, HmcKernel, InitStrategy, MetropolisHastings, ModelPotential, Potential, Samples, MCMC};
+    pub use crate::infer::{
+        FnPotential, HmcKernel, InitStrategy, MetropolisHastings, ModelPotential, Potential, Samples, MCMC,
+    };
     pub use crate::model::{Handler, Model};
 }

@@ -34,7 +34,7 @@ impl<'a, R: Real> Dirichlet<'a, R> {
     /// Interpret the concentration as an `n x k` matrix.
     pub fn with_k(mut self, k: usize) -> Self {
         let total = self.concentration.len();
-        assert!(total % k == 0);
+        assert!(total.is_multiple_of(k));
         self.k = k;
         self.n = total / k;
         self
@@ -347,8 +347,16 @@ mod tests {
         // grads wrt tril (lower entries only matter)
         let x = [1.0, 0.0, -0.3, 0.7, 2.0, 1.0];
         check_grad(
-            |p| MultivariateNormal::new(&[0.5, -1.0][..], &p[0..4]).expand(3).log_prob_data(&x),
-            |p| MultivariateNormal::new(&[0.5, -1.0][..], &p[0..4]).expand(3).log_prob_data(&x),
+            |p| {
+                MultivariateNormal::new(&[0.5, -1.0][..], &p[0..4])
+                    .expand(3)
+                    .log_prob_data(&x)
+            },
+            |p| {
+                MultivariateNormal::new(&[0.5, -1.0][..], &p[0..4])
+                    .expand(3)
+                    .log_prob_data(&x)
+            },
             &[tril[0], 0.0, tril[2], tril[3]],
             1e-6,
         );

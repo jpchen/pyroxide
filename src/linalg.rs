@@ -14,7 +14,7 @@ pub fn cholesky(a: &[f64], n: usize) -> Option<Vec<f64>> {
         for k in 0..j {
             s -= l[j * n + k] * l[j * n + k];
         }
-        if !(s > 0.0) || !s.is_finite() {
+        if !s.is_finite() || s <= 0.0 {
             return None;
         }
         let d = s.sqrt();

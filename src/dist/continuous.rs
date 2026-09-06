@@ -269,11 +269,7 @@ pub struct StudentT<'a, R> {
 }
 
 impl<'a, R: Real> StudentT<'a, R> {
-    pub fn new(
-        df: impl IntoParam<'a, R>,
-        loc: impl IntoParam<'a, R>,
-        scale: impl IntoParam<'a, R>,
-    ) -> Self {
+    pub fn new(df: impl IntoParam<'a, R>, loc: impl IntoParam<'a, R>, scale: impl IntoParam<'a, R>) -> Self {
         let (df, loc, scale) = (df.into_param(), loc.into_param(), scale.into_param());
         let n = broadcast_len(&[df.len(), loc.len(), scale.len()], None);
         StudentT { df, loc, scale, n }
@@ -293,7 +289,9 @@ impl<'a, R: Real> Distribution<R> for StudentT<'a, R> {
             let inv_s = 1.0 / s;
             let z = (x - mu) * inv_s;
             let w = 1.0 + z * z / nu;
-            let lp = ln_gamma(0.5 * (nu + 1.0)) - ln_gamma(0.5 * nu) - 0.5 * (nu * std::f64::consts::PI).ln()
+            let lp = ln_gamma(0.5 * (nu + 1.0))
+                - ln_gamma(0.5 * nu)
+                - 0.5 * (nu * std::f64::consts::PI).ln()
                 - s.ln()
                 - 0.5 * (nu + 1.0) * w.ln();
             if !R::DIFFERENTIABLE {
@@ -349,7 +347,9 @@ impl<'a, R: Real> Distribution<R> for Uniform<'a, R> {
             Support::Interval(self.low.get(0), self.high.get(0))
         } else {
             let lo = (0..self.n).map(|i| self.low.get(i)).fold(f64::INFINITY, f64::min);
-            let hi = (0..self.n).map(|i| self.high.get(i)).fold(f64::NEG_INFINITY, f64::max);
+            let hi = (0..self.n)
+                .map(|i| self.high.get(i))
+                .fold(f64::NEG_INFINITY, f64::max);
             let all_same = (0..self.n).all(|i| self.low.get(i) == lo && self.high.get(i) == hi);
             assert!(all_same, "Uniform with heterogeneous bounds cannot be a latent site; use a scalar bound and rescale, or observe it");
             Support::Interval(lo, hi)
@@ -509,7 +509,11 @@ impl<'a, R: Real> Distribution<R> for InverseGamma<'a, R> {
             if !R::DIFFERENTIABLE {
                 return (lp, [0.0; 2], 0.0);
             }
-            (lp, [lb - digamma(a) - lx, a / b - 1.0 / x], -(a + 1.0) / x + b / (x * x))
+            (
+                lp,
+                [lb - digamma(a) - lx, a / b - 1.0 / x],
+                -(a + 1.0) / x + b / (x * x),
+            )
         })
     }
     fn sample(&self, rng: &mut dyn RngCore, out: &mut [f64]) {
@@ -569,8 +573,8 @@ impl<'a, R: Real> Distribution<R> for Beta<'a, R> {
     }
     fn sample(&self, rng: &mut dyn RngCore, out: &mut [f64]) {
         for (i, o) in out.iter_mut().enumerate() {
-            let d = rand_distr::Beta::new(self.alpha.get(i), self.beta.get(i))
-                .expect("Beta: invalid parameters");
+            let d =
+                rand_distr::Beta::new(self.alpha.get(i), self.beta.get(i)).expect("Beta: invalid parameters");
             *o = d.sample(rng);
         }
     }
@@ -859,7 +863,10 @@ mod tests {
         let d = ImproperUniform::new(Support::Positive, 2);
         let lp: f64 = d.log_prob_data(&[1.0, 2.0]);
         assert_eq!(lp, 0.0);
-        assert_eq!(<ImproperUniform as Distribution<f64>>::support(&d), Support::Positive);
+        assert_eq!(
+            <ImproperUniform as Distribution<f64>>::support(&d),
+            Support::Positive
+        );
     }
 
     #[test]
@@ -879,10 +886,18 @@ mod tests {
             let mut r2 = rng();
             let xs: Vec<f64> = (0..n).map(|_| d(&mut r2)).collect();
             let (m, v) = mean_var(&xs);
-            assert!((m - mean).abs() < 0.03 * (1.0 + mean.abs()), "{name} mean {m} vs {mean}");
+            assert!(
+                (m - mean).abs() < 0.03 * (1.0 + mean.abs()),
+                "{name} mean {m} vs {mean}"
+            );
             assert!((v - var).abs() < 0.05 * (1.0 + var), "{name} var {v} vs {var}");
         };
-        check("normal", &|r| Normal::<f64>::new(1.0, 2.0).sample_vec(r)[0], 1.0, 4.0);
+        check(
+            "normal",
+            &|r| Normal::<f64>::new(1.0, 2.0).sample_vec(r)[0],
+            1.0,
+            4.0,
+        );
         check(
             "lognormal",
             &|r| LogNormal::<f64>::new(0.0, 0.5).sample_vec(r)[0],
@@ -895,17 +910,59 @@ mod tests {
             2.0 * (2.0 / std::f64::consts::PI).sqrt(),
             4.0 * (1.0 - 2.0 / std::f64::consts::PI),
         );
-        check("uniform", &|r| Uniform::<f64>::new(-1.0, 3.0).sample_vec(r)[0], 1.0, 16.0 / 12.0);
-        check("exponential", &|r| Exponential::<f64>::new(2.0).sample_vec(r)[0], 0.5, 0.25);
-        check("gamma", &|r| Gamma::<f64>::new(3.0, 2.0).sample_vec(r)[0], 1.5, 0.75);
-        check("invgamma", &|r| InverseGamma::<f64>::new(4.0, 2.0).sample_vec(r)[0], 2.0 / 3.0, 4.0 / 18.0);
-        check("beta", &|r| Beta::<f64>::new(2.0, 3.0).sample_vec(r)[0], 0.4, 0.04);
-        check("pareto", &|r| Pareto::<f64>::new(1.0, 4.0).sample_vec(r)[0], 4.0 / 3.0, 4.0 / 18.0);
-        check("laplace", &|r| Laplace::<f64>::new(0.5, 1.5).sample_vec(r)[0], 0.5, 4.5);
-        check("student_t", &|r| StudentT::<f64>::new(7.0, 0.5, 1.5).sample_vec(r)[0], 0.5, 2.25 * 7.0 / 5.0);
+        check(
+            "uniform",
+            &|r| Uniform::<f64>::new(-1.0, 3.0).sample_vec(r)[0],
+            1.0,
+            16.0 / 12.0,
+        );
+        check(
+            "exponential",
+            &|r| Exponential::<f64>::new(2.0).sample_vec(r)[0],
+            0.5,
+            0.25,
+        );
+        check(
+            "gamma",
+            &|r| Gamma::<f64>::new(3.0, 2.0).sample_vec(r)[0],
+            1.5,
+            0.75,
+        );
+        check(
+            "invgamma",
+            &|r| InverseGamma::<f64>::new(4.0, 2.0).sample_vec(r)[0],
+            2.0 / 3.0,
+            4.0 / 18.0,
+        );
+        check(
+            "beta",
+            &|r| Beta::<f64>::new(2.0, 3.0).sample_vec(r)[0],
+            0.4,
+            0.04,
+        );
+        check(
+            "pareto",
+            &|r| Pareto::<f64>::new(1.0, 4.0).sample_vec(r)[0],
+            4.0 / 3.0,
+            4.0 / 18.0,
+        );
+        check(
+            "laplace",
+            &|r| Laplace::<f64>::new(0.5, 1.5).sample_vec(r)[0],
+            0.5,
+            4.5,
+        );
+        check(
+            "student_t",
+            &|r| StudentT::<f64>::new(7.0, 0.5, 1.5).sample_vec(r)[0],
+            0.5,
+            2.25 * 7.0 / 5.0,
+        );
         // Cauchy has no mean; check the median instead.
         let mut r2 = rng();
-        let mut xs: Vec<f64> = (0..n).map(|_| Cauchy::<f64>::new(0.5, 1.5).sample_vec(&mut r2)[0]).collect();
+        let mut xs: Vec<f64> = (0..n)
+            .map(|_| Cauchy::<f64>::new(0.5, 1.5).sample_vec(&mut r2)[0])
+            .collect();
         xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
         assert!((xs[n / 2] - 0.5).abs() < 0.03);
     }

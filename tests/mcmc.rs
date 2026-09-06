@@ -104,12 +104,14 @@ fn correlated_mvn_dense_mass() {
             let mut q = Var::constant(0.0);
             for i in 0..d {
                 for j in 0..d {
-                    q = q + z[i] * z[j] * prec2[i * d + j];
+                    q += z[i] * z[j] * prec2[i * d + j];
                 }
             }
             q * 0.5
         });
-        let kernel = HmcKernel::nuts(pot).dense_mass(true).regularize_mass_matrix(regularize);
+        let kernel = HmcKernel::nuts(pot)
+            .dense_mass(true)
+            .regularize_mass_matrix(regularize);
         let samples = MCMC::new(kernel, 5000, 8000)
             .init_strategy(InitStrategy::Unconstrained(vec![0.0; d]))
             .run(0);
@@ -154,7 +156,11 @@ fn logistic_data(n: usize, d: usize) -> LogisticRegression {
         .map(|i| {
             let logit: f64 = (0..d).map(|j| x[i * d + j] * true_coefs[j]).sum();
             let p = pyroxide::ad::sigmoid_f64(logit);
-            if rand::Rng::random::<f64>(&mut rng) < p { 1.0 } else { 0.0 }
+            if rand::Rng::random::<f64>(&mut rng) < p {
+                1.0
+            } else {
+                0.0
+            }
         })
         .collect();
     LogisticRegression { x, n, d, labels }
@@ -167,7 +173,9 @@ fn logistic_regression_nuts_and_hmc() {
         let pot = ModelPotential::new(&model);
         let kernel = match algo {
             "nuts" => HmcKernel::nuts(pot).find_heuristic_step_size(true),
-            _ => HmcKernel::hmc(pot).trajectory_length(8.0).find_heuristic_step_size(true),
+            _ => HmcKernel::hmc(pot)
+                .trajectory_length(8.0)
+                .find_heuristic_step_size(true),
         };
         let samples = MCMC::new(kernel, 1000, 8000).run(0);
         let coefs = samples.get("coefs");
@@ -191,7 +199,12 @@ fn logistic_regression_metropolis() {
     let ref_mean = nuts.get("coefs").mean();
     let ref_std = nuts.get("coefs").std();
     for i in 0..2 {
-        assert_close(coefs.mean()[i], ref_mean[i], 0.1 * ref_std[i].max(0.5), &format!("mh coef {i}"));
+        assert_close(
+            coefs.mean()[i],
+            ref_mean[i],
+            0.1 * ref_std[i].max(0.5),
+            &format!("mh coef {i}"),
+        );
         assert_rel(coefs.std()[i], ref_std[i], 0.15, &format!("mh std {i}"));
     }
 }
@@ -228,7 +241,10 @@ fn uniform_normal() {
     let data: Vec<f64> = (0..1000)
         .map(|_| true_coef + rand::Rng::sample::<f64, _>(&mut rng, rand_distr::StandardNormal))
         .collect();
-    let model = UniformNormal { data, improper: false };
+    let model = UniformNormal {
+        data,
+        improper: false,
+    };
     let mcmc = MCMC::new(HmcKernel::nuts(ModelPotential::new(&model)), 1000, 1000).collect_warmup(true);
     let samples = mcmc.run(2);
     assert_eq!(samples.get("loc").draws, 2000);
@@ -281,7 +297,10 @@ fn beta_bernoulli_data() -> BetaBernoulli {
         .flat_map(|_| {
             let u0: f64 = rand::Rng::random(&mut rng);
             let u1: f64 = rand::Rng::random(&mut rng);
-            [(u0 < true_probs[0]) as u8 as f64, (u1 < true_probs[1]) as u8 as f64]
+            [
+                (u0 < true_probs[0]) as u8 as f64,
+                (u1 < true_probs[1]) as u8 as f64,
+            ]
         })
         .collect();
     BetaBernoulli { data }
@@ -304,7 +323,12 @@ fn beta_bernoulli_nuts_hmc_mh() {
     )
     .run(2);
     check(&s, "hmc");
-    let s = MCMC::new(MetropolisHastings::new(ModelPotential::new(&model)), 5000, 100_000).run(2);
+    let s = MCMC::new(
+        MetropolisHastings::new(ModelPotential::new(&model)),
+        5000,
+        100_000,
+    )
+    .run(2);
     check(&s, "mh");
 }
 
@@ -423,9 +447,9 @@ impl Model for ChangePoint {
 #[test]
 fn change_point() {
     let counts: Vec<f64> = [
-        13, 24, 8, 24, 7, 35, 14, 11, 15, 11, 22, 22, 11, 57, 11, 19, 29, 6, 19, 12, 22, 12, 18, 72,
-        32, 9, 7, 13, 19, 23, 27, 20, 6, 17, 13, 10, 14, 6, 16, 15, 7, 2, 15, 15, 19, 70, 49, 7, 53,
-        22, 21, 31, 19, 11, 1, 20, 12, 35, 17, 23, 17, 4, 2, 31, 30, 13, 27, 0, 39, 37, 5, 14, 13, 22,
+        13, 24, 8, 24, 7, 35, 14, 11, 15, 11, 22, 22, 11, 57, 11, 19, 29, 6, 19, 12, 22, 12, 18, 72, 32, 9,
+        7, 13, 19, 23, 27, 20, 6, 17, 13, 10, 14, 6, 16, 15, 7, 2, 15, 15, 19, 70, 49, 7, 53, 22, 21, 31, 19,
+        11, 1, 20, 12, 35, 17, 23, 17, 4, 2, 31, 30, 13, 27, 0, 39, 37, 5, 14, 13, 22,
     ]
     .iter()
     .map(|&c| c as f64)
@@ -472,7 +496,11 @@ impl Model for BinomialStable {
 #[test]
 fn binomial_stable() {
     for with_logits in [true, false] {
-        let model = BinomialStable { n: 5_000_000.0, x: 3849.0, with_logits };
+        let model = BinomialStable {
+            n: 5_000_000.0,
+            x: 3849.0,
+            with_logits,
+        };
         let samples = MCMC::new(HmcKernel::nuts(ModelPotential::new(&model)), 200, 200).run(2);
         assert_rel(samples.get("p").scalar_mean(), 3849.0 / 5e6, 0.05, "p");
     }
@@ -552,7 +580,11 @@ fn multiple_chains_eight_schools() {
         // posterior mean of mu for eight schools is about 4.4; tau about 3.6
         assert_close(samples.get("mu").scalar_mean(), 4.4, 0.6, "mu");
         assert_close(samples.get("tau").scalar_mean(), 3.6, 0.8, "tau");
-        assert!(samples.num_divergences() < 40, "divergences {}", samples.num_divergences());
+        assert!(
+            samples.num_divergences() < 40,
+            "divergences {}",
+            samples.num_divergences()
+        );
     }
     // sequential and parallel runs with the same seed are identical
     let a = MCMC::new(HmcKernel::nuts(ModelPotential::new(&model)), 200, 200)
@@ -574,12 +606,20 @@ fn multiple_chains_eight_schools() {
 fn extra_fields() {
     let model = eight_schools();
     let samples = MCMC::new(HmcKernel::nuts(ModelPotential::new(&model)), 100, 100).run(0);
-    for name in ["accept_prob", "step_size", "num_steps", "diverging", "energy", "potential_energy", "mean_accept_prob"] {
+    for name in [
+        "accept_prob",
+        "step_size",
+        "num_steps",
+        "diverging",
+        "energy",
+        "potential_energy",
+        "mean_accept_prob",
+    ] {
         let a = samples.extra(name);
         assert_eq!(a.draws, 100);
     }
     let steps = samples.extra("num_steps");
-    assert!(steps.data().iter().all(|&s| s >= 1.0 && s <= 1023.0));
+    assert!(steps.data().iter().all(|&s| (1.0..=1023.0).contains(&s)));
     let ss = samples.extra("step_size");
     // step size is frozen after warmup
     assert!(ss.data().iter().all(|&s| s == ss.data()[0]));
@@ -604,7 +644,9 @@ fn init_to_value_starts_there() {
     let mut init = HashMap::new();
     init.insert("mu".to_string(), vec![3.0]);
     init.insert("tau".to_string(), vec![2.0]);
-    let kernel = HmcKernel::nuts(ModelPotential::new(&model)).adapt_step_size(false).step_size(1e-12);
+    let kernel = HmcKernel::nuts(ModelPotential::new(&model))
+        .adapt_step_size(false)
+        .step_size(1e-12);
     // with a tiny fixed step size the chain barely moves from its start
     let samples = MCMC::new(kernel, 0, 5).init_to_value(init).run(0);
     assert_close(samples.get("mu").scalar_mean(), 3.0, 1e-6, "mu");

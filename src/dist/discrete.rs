@@ -86,7 +86,11 @@ impl<'a, R: Real> Distribution<R> for Bernoulli<'a, R> {
                     return (f64::NEG_INFINITY, [0.0], 0.0);
                 }
                 // log p(x) = x*l - softplus(l)
-                let lp = if x == 1.0 { -softplus_f64(-l) } else { -softplus_f64(l) };
+                let lp = if x == 1.0 {
+                    -softplus_f64(-l)
+                } else {
+                    -softplus_f64(l)
+                };
                 (lp, [x - sigmoid_f64(l)], 0.0)
             }),
         }
@@ -140,9 +144,7 @@ impl<'a, R: Real> Distribution<R> for Binomial<'a, R> {
         self.n
     }
     fn support(&self) -> Support {
-        let max = (0..self.n)
-            .map(|i| self.total_count.get(i))
-            .fold(0.0, f64::max);
+        let max = (0..self.n).map(|i| self.total_count.get(i)).fold(0.0, f64::max);
         Support::IntegerInterval(0, max as i64)
     }
     fn log_prob_value(&self, x: Value<'_, R>) -> R {
@@ -283,14 +285,21 @@ impl<'a, R: Real> Categorical<'a, R> {
     /// Interpret the parameter as an `n x k` matrix with the given `k`.
     pub fn with_k(mut self, k: usize) -> Self {
         let total = self.p.param().len();
-        assert!(total % k == 0, "Categorical: parameter length {total} not divisible by k={k}");
+        assert!(
+            total.is_multiple_of(k),
+            "Categorical: parameter length {total} not divisible by k={k}"
+        );
         self.k = k;
         self.n = total / k;
         self
     }
     /// Number of iid draws sharing one parameter vector.
     pub fn expand(mut self, n: usize) -> Self {
-        assert_eq!(self.p.param().len(), self.k, "expand requires a shared parameter vector");
+        assert_eq!(
+            self.p.param().len(),
+            self.k,
+            "expand requires a shared parameter vector"
+        );
         self.n = n;
         self
     }
@@ -316,7 +325,9 @@ impl<'a, R: Real> Categorical<'a, R> {
                 }
             }
             ProbParam::Logits(_) => {
-                let m = (0..self.k).map(|j| p.get(r + j)).fold(f64::NEG_INFINITY, f64::max);
+                let m = (0..self.k)
+                    .map(|j| p.get(r + j))
+                    .fold(f64::NEG_INFINITY, f64::max);
                 let mut s = 0.0;
                 for j in 0..self.k {
                     out[j] = (p.get(r + j) - m).exp();
@@ -365,7 +376,9 @@ impl<'a, R: Real> Distribution<R> for Categorical<'a, R> {
                     }
                 }
                 ProbParam::Logits(_) => {
-                    let m = (0..self.k).map(|j| p.get(r + j)).fold(f64::NEG_INFINITY, f64::max);
+                    let m = (0..self.k)
+                        .map(|j| p.get(r + j))
+                        .fold(f64::NEG_INFINITY, f64::max);
                     let s: f64 = (0..self.k).map(|j| (p.get(r + j) - m).exp()).sum();
                     let lse = m + s.ln();
                     total += p.get(r + xi) - lse;
@@ -512,12 +525,18 @@ mod tests {
     fn discrete_sampling_moments() {
         let mut r = Xoshiro256PlusPlus::seed_from_u64(1);
         let n = 100_000;
-        let xs: Vec<f64> = (0..n).map(|_| Bernoulli::<f64>::new(0.3).sample_vec(&mut r)[0]).collect();
+        let xs: Vec<f64> = (0..n)
+            .map(|_| Bernoulli::<f64>::new(0.3).sample_vec(&mut r)[0])
+            .collect();
         assert!((mean_var(&xs).0 - 0.3).abs() < 0.01);
-        let xs: Vec<f64> = (0..n).map(|_| Binomial::<f64>::new(10.0, 0.3).sample_vec(&mut r)[0]).collect();
+        let xs: Vec<f64> = (0..n)
+            .map(|_| Binomial::<f64>::new(10.0, 0.3).sample_vec(&mut r)[0])
+            .collect();
         let (m, v) = mean_var(&xs);
         assert!((m - 3.0).abs() < 0.03 && (v - 2.1).abs() < 0.1);
-        let xs: Vec<f64> = (0..n).map(|_| Poisson::<f64>::new(2.5).sample_vec(&mut r)[0]).collect();
+        let xs: Vec<f64> = (0..n)
+            .map(|_| Poisson::<f64>::new(2.5).sample_vec(&mut r)[0])
+            .collect();
         let (m, v) = mean_var(&xs);
         assert!((m - 2.5).abs() < 0.03 && (v - 2.5).abs() < 0.1);
         let xs: Vec<f64> = (0..n)

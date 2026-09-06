@@ -12,7 +12,7 @@ use crate::dist::Support;
 pub fn unconstrained_len(support: Support, constrained_len: usize, event_len: usize) -> usize {
     match support {
         Support::Simplex => {
-            debug_assert!(constrained_len % event_len == 0);
+            debug_assert!(constrained_len.is_multiple_of(event_len));
             (constrained_len / event_len) * (event_len - 1)
         }
         _ => constrained_len,
@@ -114,7 +114,7 @@ fn interval<R: Real>(u: &[R], lo: f64, hi: f64, out: &mut Vec<R>) -> R {
 /// Stick-breaking transform from `R^{k-1}` to the `k`-simplex (Stan / numpyro
 /// parameterization). log|J| = sum_i [log y_i - softplus(u_i - log(k-1-i))].
 fn simplex<R: Real>(u: &[R], k: usize, out: &mut Vec<R>) -> R {
-    assert!(u.len() % (k - 1) == 0, "simplex: bad unconstrained length");
+    assert!(u.len().is_multiple_of(k - 1), "simplex: bad unconstrained length");
     let mut logdet = R::zero();
     for row in u.chunks(k - 1) {
         let mut remaining = R::one();
@@ -125,7 +125,7 @@ fn simplex<R: Real>(u: &[R], k: usize, out: &mut Vec<R>) -> R {
             let y = z * remaining;
             logdet = logdet + y.ln() - shifted.softplus();
             out.push(y);
-            remaining = remaining - y;
+            remaining -= y;
         }
         out.push(remaining);
     }
@@ -182,7 +182,11 @@ mod tests {
                 }
             }
             let det = det(&jac, n).abs();
-            assert!((det.ln() - logdet).abs() < 1e-5, "{support:?}: logdet {logdet} vs numeric {}", det.ln());
+            assert!(
+                (det.ln() - logdet).abs() < 1e-5,
+                "{support:?}: logdet {logdet} vs numeric {}",
+                det.ln()
+            );
         }
         // gradient of logdet and of outputs via AD
         ad::reset();

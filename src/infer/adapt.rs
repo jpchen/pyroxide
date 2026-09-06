@@ -244,8 +244,7 @@ impl MassMatrix {
             MassMatrix::Diag { inv, sqrt_mass }
         } else {
             assert_eq!(inv.len(), dim * dim, "inverse mass matrix has wrong size");
-            let chol_inv = linalg::cholesky(&inv, dim)
-                .expect("inverse mass matrix is not positive definite");
+            let chol_inv = linalg::cholesky(&inv, dim).expect("inverse mass matrix is not positive definite");
             MassMatrix::Dense { dim, inv, chol_inv }
         }
     }
@@ -273,9 +272,7 @@ impl MassMatrix {
     #[inline]
     pub fn kinetic(&self, r: &[f64]) -> f64 {
         match self {
-            MassMatrix::Diag { inv, .. } => {
-                0.5 * r.iter().zip(inv).map(|(r, m)| r * r * m).sum::<f64>()
-            }
+            MassMatrix::Diag { inv, .. } => 0.5 * r.iter().zip(inv).map(|(r, m)| r * r * m).sum::<f64>(),
             MassMatrix::Dense { dim, inv, .. } => {
                 let mut s = 0.0;
                 for i in 0..*dim {
@@ -497,7 +494,9 @@ mod tests {
         let mut dense = Welford::new(3, false);
         let mut samples = Vec::new();
         for _ in 0..4000 {
-            let eps: Vec<f64> = (0..3).map(|_| rand::Rng::sample(&mut rng, StandardNormal)).collect();
+            let eps: Vec<f64> = (0..3)
+                .map(|_| rand::Rng::sample(&mut rng, StandardNormal))
+                .collect();
             let x: Vec<f64> = (0..3)
                 .map(|i| (0..3).map(|k| a[i * 3 + k] * eps[k]).sum::<f64>() + i as f64)
                 .collect();
@@ -529,7 +528,18 @@ mod tests {
             (150, vec![(0, 74), (75, 99), (100, 149)]),
             (200, vec![(0, 74), (75, 99), (100, 149), (150, 199)]),
             (280, vec![(0, 74), (75, 99), (100, 229), (230, 279)]),
-            (1000, vec![(0, 74), (75, 99), (100, 149), (150, 249), (250, 449), (450, 949), (950, 999)]),
+            (
+                1000,
+                vec![
+                    (0, 74),
+                    (75, 99),
+                    (100, 149),
+                    (150, 249),
+                    (250, 449),
+                    (450, 949),
+                    (950, 999),
+                ],
+            ),
         ];
         for (n, expected) in cases {
             let s = build_adaptation_schedule(n);
@@ -587,7 +597,10 @@ mod tests {
         }
         let last = 0.25;
         assert_eq!(wa.window_idx(), 1);
-        assert!(wa.step_size < last, "step size decreases when accept_prob < target");
+        assert!(
+            wa.step_size < last,
+            "step size decreases when accept_prob < target"
+        );
         assert_eq!(wa.mass.inverse(), &[1.0, 1.0, 1.0]);
 
         let w = schedule[1];
@@ -612,7 +625,12 @@ mod tests {
         }
         assert_eq!(wa.window_idx(), 3);
         // accept_prob == target: log step size sits at the prox center log(10 * last)
-        assert!((wa.step_size - last * 10.0).abs() < 1e-6, "{} vs {}", wa.step_size, last * 10.0);
+        assert!(
+            (wa.step_size - last * 10.0).abs() < 1e-6,
+            "{} vs {}",
+            wa.step_size,
+            last * 10.0
+        );
         for v in wa.mass.inverse() {
             assert!((v - reg).abs() < 1e-7);
         }

@@ -148,7 +148,10 @@ fn eight_schools() -> EightSchools {
 
 fn baseball() -> Baseball {
     // Efron & Morris (1975): hits in the first 45 at-bats of the 1970 season
-    let hits = [18.0, 17.0, 16.0, 15.0, 14.0, 14.0, 13.0, 12.0, 11.0, 11.0, 10.0, 10.0, 10.0, 10.0, 10.0, 9.0, 8.0, 7.0];
+    let hits = [
+        18.0, 17.0, 16.0, 15.0, 14.0, 14.0, 13.0, 12.0, 11.0, 11.0, 10.0, 10.0, 10.0, 10.0, 10.0, 9.0, 8.0,
+        7.0,
+    ];
     Baseball {
         at_bats: vec![45.0; 18],
         hits: hits.to_vec(),
@@ -231,9 +234,13 @@ fn run_kernel<P: Potential>(pot: P, args: &Args) -> (Samples, f64) {
         "hmc" => MCMC::new(HmcKernel::hmc(pot), args.warmup, args.samples)
             .num_chains(args.chains)
             .run(args.seed),
-        "mh" => MCMC::new(MetropolisHastings::new(pot).dense_mass(true), args.warmup, args.samples)
-            .num_chains(args.chains)
-            .run(args.seed),
+        "mh" => MCMC::new(
+            MetropolisHastings::new(pot).dense_mass(true),
+            args.warmup,
+            args.samples,
+        )
+        .num_chains(args.chains)
+        .run(args.seed),
         other => panic!("unknown algo {other}"),
     };
     (samples, start.elapsed().as_secs_f64())
@@ -298,7 +305,10 @@ fn main() {
             .iter()
             .find(|(n, _)| n == "mean_accept_prob")
             .map(|(_, arr)| {
-                (0..arr.chains).map(|c| arr.draw(c, arr.draws - 1)[0]).sum::<f64>() / arr.chains as f64
+                (0..arr.chains)
+                    .map(|c| arr.draw(c, arr.draws - 1)[0])
+                    .sum::<f64>()
+                    / arr.chains as f64
             })
             .unwrap_or(f64::NAN);
         println!(

@@ -839,7 +839,11 @@ mod tests {
     fn unary_grads() {
         check_grad(
             |x| {
-                x[0].exp() + x[1].ln() + x[1].sqrt() + x[0].powf(3.0) + x[0].sin() * x[1].cos()
+                x[0].exp()
+                    + x[1].ln()
+                    + x[1].sqrt()
+                    + x[0].powf(3.0)
+                    + x[0].sin() * x[1].cos()
                     + x[0].tanh()
                     + x[1].log1p()
                     + x[0].expm1()
@@ -852,7 +856,11 @@ mod tests {
                     + x[1].powi(2)
             },
             |x| {
-                x[0].exp() + x[1].ln() + x[1].sqrt() + x[0].powf(3.0) + x[0].sin() * x[1].cos()
+                x[0].exp()
+                    + x[1].ln()
+                    + x[1].sqrt()
+                    + x[0].powf(3.0)
+                    + x[0].sin() * x[1].cos()
                     + x[0].tanh()
                     + x[1].ln_1p()
                     + x[0].exp_m1()

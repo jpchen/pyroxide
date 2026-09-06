@@ -163,7 +163,15 @@ impl<P: Potential> HmcKernel<P> {
     /// One velocity-Verlet (leapfrog) step of size `eps` (may be negative).
     /// `z`, `r`, `grad` are updated in place; returns the new potential energy.
     #[inline]
-    fn leapfrog(&self, eps: f64, mass: &MassMatrix, z: &mut [f64], r: &mut [f64], grad: &mut [f64], v: &mut [f64]) -> f64 {
+    fn leapfrog(
+        &self,
+        eps: f64,
+        mass: &MassMatrix,
+        z: &mut [f64],
+        r: &mut [f64],
+        grad: &mut [f64],
+        v: &mut [f64],
+    ) -> f64 {
         let half = 0.5 * eps;
         for (r, g) in r.iter_mut().zip(grad.iter()) {
             *r -= half * g;
@@ -210,7 +218,11 @@ impl<P: Potential> HmcKernel<P> {
             if last_direction != 0 && direction != last_direction {
                 break;
             }
-            let next = if direction == 1 { step_size * 2.0 } else { step_size * 0.5 };
+            let next = if direction == 1 {
+                step_size * 2.0
+            } else {
+                step_size * 0.5
+            };
             if (direction == -1 && next <= f64::MIN_POSITIVE) || (direction == 1 && !next.is_finite()) {
                 break;
             }
@@ -257,7 +269,16 @@ impl<P: Potential> HmcKernel<P> {
             self.iterative_build_subtree(ws, mass, step_size, going_right, energy_current, rng, d);
             // combine main + sub -> tmp (biased progressive sampling)
             let transition_u: f64 = rng.random();
-            combine_tree(&mut ws.tmp, &ws.main, &ws.sub, mass, going_right, transition_u, true, &mut ws.scratch);
+            combine_tree(
+                &mut ws.tmp,
+                &ws.main,
+                &ws.sub,
+                mass,
+                going_right,
+                transition_u,
+                true,
+                &mut ws.scratch,
+            );
             std::mem::swap(&mut ws.main, &mut ws.tmp);
         }
     }
@@ -295,7 +316,14 @@ impl<P: Potential> HmcKernel<P> {
             let eps = if going_right { step_size } else { -step_size };
             let pe_new = {
                 let leaf = &mut ws.leaf;
-                self.leapfrog(eps, mass, &mut leaf.z_prop, &mut leaf.r_right, &mut leaf.g_prop, &mut ws.scratch.v)
+                self.leapfrog(
+                    eps,
+                    mass,
+                    &mut leaf.z_prop,
+                    &mut leaf.r_right,
+                    &mut leaf.g_prop,
+                    &mut ws.scratch.v,
+                )
             };
             {
                 let leaf = &mut ws.leaf;
@@ -327,15 +355,28 @@ impl<P: Potential> HmcKernel<P> {
                 // the turning check below, so re-point to `sub`).
             } else {
                 let u: f64 = rng.random();
-                combine_tree(&mut ws.tmp, &ws.sub, &ws.leaf, mass, going_right, u, false, &mut ws.scratch);
+                combine_tree(
+                    &mut ws.tmp,
+                    &ws.sub,
+                    &ws.leaf,
+                    mass,
+                    going_right,
+                    u,
+                    false,
+                    &mut ws.scratch,
+                );
                 std::mem::swap(&mut ws.sub, &mut ws.tmp);
             }
             // After the swap/combine, the newest leaf momentum is the right leaf
             // (going right) or left leaf (going left) of `sub`; both are the
             // same vector for a fresh leaf. Use the direction leaf.
             let (ckpt_min, ckpt_max) = leaf_idx_to_ckpt_idxs(leaf_idx);
-            let r_new: &[f64] = if going_right { &ws.sub.r_right } else { &ws.sub.r_left };
-            if leaf_idx % 2 == 0 {
+            let r_new: &[f64] = if going_right {
+                &ws.sub.r_right
+            } else {
+                &ws.sub.r_left
+            };
+            if leaf_idx.is_multiple_of(2) {
                 let ci = ckpt_max as usize;
                 ws.r_ckpts[ci * d..(ci + 1) * d].copy_from_slice(r_new);
                 ws.r_sum_ckpts[ci * d..(ci + 1) * d].copy_from_slice(&ws.sub.r_sum);
@@ -375,7 +416,14 @@ impl<P: Potential> HmcKernel<P> {
         ws.r_new.copy_from_slice(&ws.r0);
         let mut pe_new = st.potential_energy;
         for _ in 0..num_steps {
-            pe_new = self.leapfrog(step_size, mass, &mut ws.z_new, &mut ws.r_new, &mut ws.g_new, &mut ws.scratch.v);
+            pe_new = self.leapfrog(
+                step_size,
+                mass,
+                &mut ws.z_new,
+                &mut ws.r_new,
+                &mut ws.g_new,
+                &mut ws.scratch.v,
+            );
         }
         let energy_new = pe_new + mass.kinetic(&ws.r_new);
         let mut delta = energy_new - energy_old;
@@ -623,7 +671,11 @@ fn combine_tree(
     biased: bool,
     s: &mut Scratch,
 ) {
-    let (left, right) = if going_right { (current, new) } else { (new, current) };
+    let (left, right) = if going_right {
+        (current, new)
+    } else {
+        (new, current)
+    };
     dest.z_left.copy_from_slice(&left.z_left);
     dest.r_left.copy_from_slice(&left.r_left);
     dest.g_left.copy_from_slice(&left.g_left);
@@ -641,9 +693,16 @@ fn combine_tree(
         let t = new.turning || is_turning(mass, &dest.r_left, &dest.r_right, &dest.r_sum, s);
         (p, t)
     } else {
-        (crate::ad::sigmoid_f64(new.weight - current.weight), current.turning)
+        (
+            crate::ad::sigmoid_f64(new.weight - current.weight),
+            current.turning,
+        )
     };
-    let src = if transition_u < transition_prob { new } else { current };
+    let src = if transition_u < transition_prob {
+        new
+    } else {
+        current
+    };
     dest.z_prop.copy_from_slice(&src.z_prop);
     dest.g_prop.copy_from_slice(&src.g_prop);
     dest.prop_pe = src.prop_pe;
@@ -675,11 +734,13 @@ impl<P: Potential> Kernel for HmcKernel<P> {
         let g0 = z_grad.clone();
         let mut rng2 = rng.clone();
         rng.jump();
-        let mut heuristic = |ss: f64, mass: &MassMatrix| {
-            self.find_reasonable_step_size(ss, mass, &z0, pe, &g0, &mut rng2)
+        let mut heuristic =
+            |ss: f64, mass: &MassMatrix| self.find_reasonable_step_size(ss, mass, &z0, pe, &g0, &mut rng2);
+        let find: Option<&mut dyn FnMut(f64, &MassMatrix) -> f64> = if self.cfg.find_heuristic_step_size {
+            Some(&mut heuristic)
+        } else {
+            None
         };
-        let find: Option<&mut dyn FnMut(f64, &MassMatrix) -> f64> =
-            if self.cfg.find_heuristic_step_size { Some(&mut heuristic) } else { None };
         let adapt = WarmupAdapter::new(
             num_warmup,
             d,
@@ -711,7 +772,11 @@ impl<P: Potential> Kernel for HmcKernel<P> {
         st.adapt.mass.sample_momentum(rng, &mut st.ws.r0);
         let (accept_prob, num_steps, diverging, energy) = match self.cfg.algo {
             Algo::Nuts => {
-                let max_depth = if warmup { self.cfg.max_tree_depth.0 } else { self.cfg.max_tree_depth.1 };
+                let max_depth = if warmup {
+                    self.cfg.max_tree_depth.0
+                } else {
+                    self.cfg.max_tree_depth.1
+                };
                 self.build_tree(st, max_depth, rng);
                 let t = &st.ws.main;
                 let accept_prob = t.sum_accept / t.num_proposals.max(1) as f64;
@@ -753,7 +818,15 @@ impl<P: Potential> Kernel for HmcKernel<P> {
     }
 
     fn stat_names(&self) -> &'static [&'static str] {
-        &["accept_prob", "step_size", "num_steps", "diverging", "energy", "potential_energy", "mean_accept_prob"]
+        &[
+            "accept_prob",
+            "step_size",
+            "num_steps",
+            "diverging",
+            "energy",
+            "potential_energy",
+            "mean_accept_prob",
+        ]
     }
 
     fn stats(&self, st: &HmcState, out: &mut [f64]) {
@@ -795,8 +868,19 @@ mod tests {
         let r_sum = [3.0];
         let r_ckpts = [1.0, 2.0, 3.0, -2.0];
         let r_sum_ckpts = [2.0, 4.0, 4.0, -1.0];
-        let mut s = Scratch { v: vec![0.0], a: vec![0.0], b: vec![0.0], c: vec![0.0] };
-        let cases = [((3, 2), false), ((3, 3), true), ((0, 0), false), ((0, 1), true), ((1, 3), true)];
+        let mut s = Scratch {
+            v: vec![0.0],
+            a: vec![0.0],
+            b: vec![0.0],
+            c: vec![0.0],
+        };
+        let cases = [
+            ((3, 2), false),
+            ((3, 3), true),
+            ((0, 0), false),
+            ((0, 1), true),
+            ((1, 3), true),
+        ];
         for ((mn, mx), expected) in cases {
             let t = is_iterative_turning(&mass, &r, &r_sum, &r_ckpts, &r_sum_ckpts, mn, mx, 1, &mut s);
             assert_eq!(t, expected, "ckpt idxs ({mn}, {mx})");
@@ -913,7 +997,10 @@ mod tests {
         // port of numpyro's test_build_tree
         let pot = std_normal(1);
         for &step_size in &[0.01, 1.0, 100.0] {
-            let k = HmcKernel::nuts(&pot).adapt_step_size(false).adapt_mass_matrix(false).step_size(step_size);
+            let k = HmcKernel::nuts(&pot)
+                .adapt_step_size(false)
+                .adapt_mass_matrix(false)
+                .step_size(step_size);
             let mut rng = ChainRng::seed_from_u64(0);
             let mut st = k.init(vec![0.0], 0, &mut rng);
             st.ws.r0[0] = 1.0;

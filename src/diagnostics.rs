@@ -18,13 +18,13 @@ pub fn next_fast_len(target: usize) -> usize {
     let mut n = target;
     loop {
         let mut m = n;
-        while m % 2 == 0 {
+        while m.is_multiple_of(2) {
             m /= 2;
         }
-        while m % 3 == 0 {
+        while m.is_multiple_of(3) {
             m /= 3;
         }
-        while m % 5 == 0 {
+        while m.is_multiple_of(5) {
             m /= 5;
         }
         if m == 1 {
@@ -225,8 +225,16 @@ pub fn summarize(name: &str, arr: &Array, prob: f64) -> SiteSummary {
                 0.0
             };
             let (lo, hi) = hpdi(&flat, prob);
-            let n_eff = if arr.draws >= 2 { effective_sample_size(&per_chain, true) } else { f64::NAN };
-            let r_hat = if arr.draws >= 4 { split_gelman_rubin(&per_chain) } else { f64::NAN };
+            let n_eff = if arr.draws >= 2 {
+                effective_sample_size(&per_chain, true)
+            } else {
+                f64::NAN
+            };
+            let r_hat = if arr.draws >= 4 {
+                split_gelman_rubin(&per_chain)
+            } else {
+                f64::NAN
+            };
             ElementSummary {
                 mean,
                 std,
@@ -263,13 +271,27 @@ pub fn format_summary(summaries: &[SiteSummary], prob: f64) -> String {
     out.push('\n');
     out.push_str(&format!(
         "{:>width$} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9}\n",
-        "", "mean", "std", "median", lo, hi, "n_eff", "r_hat",
+        "",
+        "mean",
+        "std",
+        "median",
+        lo,
+        hi,
+        "n_eff",
+        "r_hat",
         width = width
     ));
     for (name, e) in rows {
         out.push_str(&format!(
             "{:>width$} {:>9.2} {:>9.2} {:>9.2} {:>9.2} {:>9.2} {:>9.2} {:>9.2}\n",
-            name, e.mean, e.std, e.median, e.hpdi_low, e.hpdi_high, e.n_eff, e.r_hat,
+            name,
+            e.mean,
+            e.std,
+            e.median,
+            e.hpdi_low,
+            e.hpdi_high,
+            e.n_eff,
+            e.r_hat,
             width = width
         ));
     }
@@ -283,7 +305,15 @@ mod tests {
 
     #[test]
     fn next_fast_len_matches_scipy() {
-        let cases = [(433, 450), (124, 125), (25, 25), (300, 300), (1, 1), (3, 3), (7, 8)];
+        let cases = [
+            (433, 450),
+            (124, 125),
+            (25, 25),
+            (300, 300),
+            (1, 1),
+            (3, 3),
+            (7, 8),
+        ];
         for (t, e) in cases {
             assert_eq!(next_fast_len(t), e, "target {t}");
         }
@@ -303,7 +333,9 @@ mod tests {
             assert!((b - e).abs() < 0.01);
         }
         let cov = autocovariance(&x, false);
-        let expected_cov = [8.25, 6.42, 4.25, 1.75, -1.08, -4.25, -7.75, -11.58, -15.75, -20.25];
+        let expected_cov = [
+            8.25, 6.42, 4.25, 1.75, -1.08, -4.25, -7.75, -11.58, -15.75, -20.25,
+        ];
         for (a, e) in cov.iter().zip(&expected_cov) {
             assert!((a - e).abs() < 0.01, "{cov:?}");
         }

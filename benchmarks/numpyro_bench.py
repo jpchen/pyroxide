@@ -171,13 +171,10 @@ class MetropolisHastings(MCMCKernel):
         return state
 
     def postprocess_fn(self, args, kwargs):
+        # numpyro applies this to one collected `u` at a time
         unravel = self._unravel
-        post = self._postprocess_fn
-
-        def f(u):
-            return post(unravel(u))
-
-        return jax.vmap(f) if False else lambda u: jax.vmap(lambda ui: post(unravel(ui)))(u)
+        post = self._postprocess_fn  # initialize_model (static args) returns the constrain fn directly
+        return lambda u: post(unravel(u))
 
     def sample(self, state, model_args, model_kwargs):
         key, key_eps, key_u = random.split(state["rng_key"], 3)

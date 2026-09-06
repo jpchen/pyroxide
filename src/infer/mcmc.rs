@@ -311,7 +311,11 @@ impl<K: Kernel> MCMC<K> {
                 InitStrategy::Value(values) => p.unconstrain(values, &uniform),
                 InitStrategy::Unconstrained(z) => z.clone(),
             };
-            let u = if d == 0 { 0.0 } else { p.value_and_grad(&z, &mut grad) };
+            let u = if d == 0 {
+                0.0
+            } else {
+                p.value_and_grad(&z, &mut grad)
+            };
             if u.is_finite() && grad.iter().all(|g| g.is_finite()) {
                 return z;
             }
@@ -331,7 +335,11 @@ impl<K: Kernel> MCMC<K> {
         let mut state = self.kernel.init(z0, self.num_warmup, &mut rng);
         let names = self.kernel.stat_names();
         let total = self.num_warmup + self.num_samples;
-        let collected = if self.collect_warmup { total } else { self.num_samples };
+        let collected = if self.collect_warmup {
+            total
+        } else {
+            self.num_samples
+        };
         let mut positions = Vec::with_capacity(collected * d);
         let mut stats = vec![Vec::with_capacity(collected); names.len()];
         let mut buf = vec![0.0; names.len()];
@@ -346,11 +354,23 @@ impl<K: Kernel> MCMC<K> {
                 }
             }
             if self.progress && (it + 1 == self.num_warmup || it + 1 == total) {
-                let phase = if it + 1 == self.num_warmup { "warmup" } else { "sample" };
+                let phase = if it + 1 == self.num_warmup {
+                    "warmup"
+                } else {
+                    "sample"
+                };
                 let mut b = vec![0.0; names.len()];
                 self.kernel.stats(&state, &mut b);
-                let ap = names.iter().position(|n| *n == "mean_accept_prob").map(|i| b[i]).unwrap_or(f64::NAN);
-                let ss = names.iter().position(|n| *n == "step_size").map(|i| b[i]).unwrap_or(f64::NAN);
+                let ap = names
+                    .iter()
+                    .position(|n| *n == "mean_accept_prob")
+                    .map(|i| b[i])
+                    .unwrap_or(f64::NAN);
+                let ss = names
+                    .iter()
+                    .position(|n| *n == "step_size")
+                    .map(|i| b[i])
+                    .unwrap_or(f64::NAN);
                 eprintln!(
                     "chain {chain}: {phase} done ({} it, {:.2}s) mean accept prob {ap:.3}, step size {ss:.3e}",
                     it + 1,
@@ -358,7 +378,11 @@ impl<K: Kernel> MCMC<K> {
                 );
             }
         }
-        ChainOutput { positions, stats, dim: d }
+        ChainOutput {
+            positions,
+            stats,
+            dim: d,
+        }
     }
 
     /// Run all chains and return postprocessed samples.
@@ -377,7 +401,10 @@ impl<K: Kernel> MCMC<K> {
                 .map(|(c, rng)| self.run_chain(c, rng))
                 .collect()
         } else {
-            rngs.into_iter().enumerate().map(|(c, rng)| self.run_chain(c, rng)).collect()
+            rngs.into_iter()
+                .enumerate()
+                .map(|(c, rng)| self.run_chain(c, rng))
+                .collect()
         };
         self.assemble(outputs)
     }
