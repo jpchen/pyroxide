@@ -1,0 +1,6 @@
+/target
+Cargo.lock.bak
+*.pdf
+benchmarks/results/*.json
+__pycache__/
+.DS_Store
