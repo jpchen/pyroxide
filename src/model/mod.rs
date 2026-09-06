@@ -69,6 +69,86 @@ pub trait Handler<R: Real> {
 
     /// Record a derived quantity so it appears in the posterior samples.
     fn deterministic(&mut self, name: &str, value: &[R]);
+
+    /// Declare a learnable parameter (variational guides). `init` is the
+    /// initial value in constrained space; `support` selects the constraining
+    /// transform applied to the underlying unconstrained parameter. Returns
+    /// the current (constrained) value. Handlers that do not hold parameters
+    /// return `init`.
+    fn param(&mut self, _name: &str, init: &[f64], _support: Support) -> Vec<R> {
+        init.iter().map(|v| R::constant(*v)).collect()
+    }
+
+    /// Multiply the log density of every site declared until the matching
+    /// [`pop_scale`](Self::pop_scale) by `scale` (minibatch upweighting; nested
+    /// scales multiply).
+    fn push_scale(&mut self, _scale: f64) {}
+    fn pop_scale(&mut self) {}
+
+    /// Declare a latent site whose value and log density are supplied
+    /// directly (numpyro's `Delta(value, log_density)` idiom, used by guides
+    /// that draw several sites jointly). Returns `value`.
+    fn sample_given(&mut self, _name: &str, value: Vec<R>, _log_prob: R) -> Vec<R> {
+        value
+    }
+
+    /// An auxiliary (reparameterized) random draw that is *not* a site.
+    /// Available in sampling handlers only.
+    fn draw<D: Distribution<R>>(&mut self, _dist: D) -> Vec<R> {
+        panic!("this handler cannot draw random values")
+    }
+}
+
+/// Static description of one learnable parameter (see [`Handler::param`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ParamInfo {
+    pub name: String,
+    pub len: usize,
+    pub support: Support,
+    pub unconstrained_len: usize,
+    pub offset: usize,
+    /// Initial value in constrained space.
+    pub init: Vec<f64>,
+}
+
+/// The layout of a guide's parameters in a flat unconstrained vector.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ParamLayout {
+    pub params: Vec<ParamInfo>,
+    pub dim: usize,
+}
+
+impl ParamLayout {
+    pub fn param(&self, name: &str) -> Option<&ParamInfo> {
+        self.params.iter().find(|p| p.name == name)
+    }
+
+    /// Flat unconstrained vector holding the initial values.
+    pub fn initial_vector(&self) -> Vec<f64> {
+        let mut z = vec![0.0; self.dim];
+        for p in &self.params {
+            let u = transform::to_unconstrained(p.support, p.len, &p.init);
+            z[p.offset..p.offset + p.unconstrained_len].copy_from_slice(&u);
+        }
+        z
+    }
+
+    /// Named constrained values from a flat unconstrained vector.
+    pub fn constrain(&self, theta: &[f64]) -> HashMap<String, Vec<f64>> {
+        self.params
+            .iter()
+            .map(|p| {
+                let mut out = Vec::with_capacity(p.len);
+                transform::to_constrained::<f64>(
+                    p.support,
+                    p.len,
+                    &theta[p.offset..p.offset + p.unconstrained_len],
+                    &mut out,
+                );
+                (p.name.clone(), out)
+            })
+            .collect()
+    }
 }
 
 /// A generative model. Implement this for a struct holding your data.
@@ -97,6 +177,8 @@ pub struct SiteLayout {
     /// Names of deterministic sites, in program order.
     pub deterministic: Vec<String>,
     pub dim: usize,
+    /// Learnable parameters declared with [`Handler::param`] (guides).
+    pub params: ParamLayout,
 }
 
 impl SiteLayout {
@@ -109,6 +191,7 @@ impl SiteLayout {
             sites: h.sites,
             deterministic: h.deterministic,
             dim: h.dim,
+            params: h.params,
         }
     }
 
@@ -160,6 +243,7 @@ struct LayoutDiscovery {
     sites: Vec<SiteInfo>,
     deterministic: Vec<String>,
     dim: usize,
+    params: ParamLayout,
 }
 
 impl Handler<f64> for LayoutDiscovery {
@@ -203,6 +287,47 @@ impl Handler<f64> for LayoutDiscovery {
     fn deterministic(&mut self, name: &str, _value: &[f64]) {
         self.deterministic.push(name.to_string());
     }
+    fn param(&mut self, name: &str, init: &[f64], support: Support) -> Vec<f64> {
+        assert!(self.params.param(name).is_none(), "duplicate param site '{name}'");
+        let event_len = match support {
+            Support::Simplex | Support::CorrCholesky | Support::LowerCholesky => init.len(),
+            _ => 1,
+        };
+        let ulen = transform::unconstrained_len(support, init.len(), event_len);
+        self.params.params.push(ParamInfo {
+            name: name.to_string(),
+            len: init.len(),
+            support,
+            unconstrained_len: ulen,
+            offset: self.params.dim,
+            init: init.to_vec(),
+        });
+        self.params.dim += ulen;
+        init.to_vec()
+    }
+    fn sample_given(&mut self, name: &str, value: Vec<f64>, _log_prob: f64) -> Vec<f64> {
+        assert!(
+            !self.sites.iter().any(|s| s.name == name),
+            "duplicate sample site '{name}'"
+        );
+        self.sites.push(SiteInfo {
+            name: name.to_string(),
+            len: value.len(),
+            event_len: 1,
+            support: Support::Real,
+            unconstrained_len: value.len(),
+            offset: self.dim,
+        });
+        self.dim += value.len();
+        value
+    }
+    fn draw<D: Distribution<f64>>(&mut self, dist: D) -> Vec<f64> {
+        // layout discovery has no RNG: use the transform of zeros as a stand-in
+        let mut out = Vec::with_capacity(dist.len());
+        let zeros = vec![0.0; transform::unconstrained_len(dist.support(), dist.len(), dist.event_len())];
+        transform::to_constrained::<f64>(dist.support(), dist.event_len(), &zeros, &mut out);
+        out
+    }
 }
 
 /// Computes the log joint density (plus log-Jacobian) of a model at a point in
@@ -214,6 +339,8 @@ pub struct LogDensity<'a, R: Real> {
     /// Accumulated log joint density.
     pub log_prob: R,
     scratch: Vec<R>,
+    scale: f64,
+    scale_stack: Vec<f64>,
 }
 
 impl<'a, R: Real> LogDensity<'a, R> {
@@ -225,6 +352,8 @@ impl<'a, R: Real> LogDensity<'a, R> {
             site_idx: 0,
             log_prob: R::zero(),
             scratch: Vec::new(),
+            scale: 1.0,
+            scale_stack: Vec::new(),
         }
     }
 
@@ -251,7 +380,12 @@ impl<'a, R: Real> Handler<R> for LogDensity<'a, R> {
         let mut x = std::mem::take(&mut self.scratch);
         x.clear();
         let logdet = transform::to_constrained(info.support, info.event_len, u, &mut x);
-        self.log_prob += dist.log_prob(&x) + logdet;
+        let term = dist.log_prob(&x) + logdet;
+        self.log_prob += if self.scale == 1.0 {
+            term
+        } else {
+            term * self.scale
+        };
         // hand back an owned vector; keep the scratch allocation for reuse
         let out = x.clone();
         self.scratch = x;
@@ -259,14 +393,115 @@ impl<'a, R: Real> Handler<R> for LogDensity<'a, R> {
     }
     #[inline]
     fn observe<D: Distribution<R>>(&mut self, _name: &str, dist: D, value: &[f64]) {
-        self.log_prob += dist.log_prob_data(value);
+        let term = dist.log_prob_data(value);
+        self.log_prob += if self.scale == 1.0 {
+            term
+        } else {
+            term * self.scale
+        };
     }
     #[inline]
     fn factor(&mut self, _name: &str, log_factor: R) {
-        self.log_prob += log_factor;
+        self.log_prob += if self.scale == 1.0 {
+            log_factor
+        } else {
+            log_factor * self.scale
+        };
     }
     #[inline]
     fn deterministic(&mut self, _name: &str, _value: &[R]) {}
+    fn push_scale(&mut self, scale: f64) {
+        self.scale_stack.push(self.scale);
+        self.scale *= scale;
+    }
+    fn pop_scale(&mut self) {
+        self.scale = self.scale_stack.pop().expect("pop_scale without push_scale");
+    }
+    fn sample_given(&mut self, name: &str, value: Vec<R>, log_prob: R) -> Vec<R> {
+        let info = &self.layout.sites[self.site_idx];
+        debug_assert_eq!(info.name, name);
+        self.site_idx += 1;
+        // the value is fixed by the caller; the unconstrained coordinates are unused
+        self.log_prob += if self.scale == 1.0 {
+            log_prob
+        } else {
+            log_prob * self.scale
+        };
+        value
+    }
+}
+
+/// Replays given latent values through a model and accumulates `log p(x, z)`
+/// (with scaling). This is the model side of the ELBO: the guide supplies the
+/// values, the model supplies the joint density.
+pub struct Replay<'a, R: Real> {
+    values: &'a [(String, Vec<R>)],
+    /// Accumulated log joint density of the model at the replayed values.
+    pub log_prob: R,
+    scale: f64,
+    scale_stack: Vec<f64>,
+}
+
+impl<'a, R: Real> Replay<'a, R> {
+    pub fn new(values: &'a [(String, Vec<R>)]) -> Self {
+        Replay {
+            values,
+            log_prob: R::zero(),
+            scale: 1.0,
+            scale_stack: Vec::new(),
+        }
+    }
+
+    fn lookup(&self, name: &str) -> &'a [R] {
+        &self
+            .values
+            .iter()
+            .find(|(n, _)| n == name)
+            .unwrap_or_else(|| panic!("the guide did not provide a value for model site '{name}'"))
+            .1
+    }
+
+    #[inline]
+    fn add(&mut self, term: R) {
+        self.log_prob += if self.scale == 1.0 {
+            term
+        } else {
+            term * self.scale
+        };
+    }
+}
+
+impl<'a, R: Real> Handler<R> for Replay<'a, R> {
+    fn sample_vec<D: Distribution<R>>(&mut self, name: &str, dist: D) -> Vec<R> {
+        let v = self.lookup(name);
+        assert_eq!(
+            v.len(),
+            dist.len(),
+            "guide value for '{name}' has the wrong length"
+        );
+        let lp = dist.log_prob(v);
+        self.add(lp);
+        v.to_vec()
+    }
+    fn observe<D: Distribution<R>>(&mut self, _name: &str, dist: D, value: &[f64]) {
+        let lp = dist.log_prob_data(value);
+        self.add(lp);
+    }
+    fn factor(&mut self, _name: &str, log_factor: R) {
+        self.add(log_factor);
+    }
+    fn deterministic(&mut self, _name: &str, _value: &[R]) {}
+    fn push_scale(&mut self, scale: f64) {
+        self.scale_stack.push(self.scale);
+        self.scale *= scale;
+    }
+    fn pop_scale(&mut self) {
+        self.scale = self.scale_stack.pop().expect("pop_scale without push_scale");
+    }
+    fn sample_given(&mut self, name: &str, _value: Vec<R>, log_prob: R) -> Vec<R> {
+        self.add(log_prob);
+        self.lookup(name).to_vec()
+    }
 }
 
 /// What kind of site a [`Trace`] entry is.
@@ -320,6 +555,10 @@ pub struct Tracer<'a> {
     values: Option<&'a HashMap<String, Vec<f64>>>,
     /// Sample observed sites instead of conditioning on the given data.
     predictive: bool,
+    /// Learned parameter values (constrained) returned by `param`.
+    params: Option<&'a HashMap<String, Vec<f64>>>,
+    scale: f64,
+    scale_stack: Vec<f64>,
     pub trace: Trace,
 }
 
@@ -330,8 +569,18 @@ impl<'a> Tracer<'a> {
             rng,
             values: None,
             predictive: false,
+            params: None,
+            scale: 1.0,
+            scale_stack: Vec::new(),
             trace: Trace::default(),
         }
+    }
+
+    /// Use learned parameter values (constrained, by name) for `param` sites;
+    /// used to sample from a fitted guide.
+    pub fn with_params(mut self, params: &'a HashMap<String, Vec<f64>>) -> Self {
+        self.params = Some(params);
+        self
     }
 
     /// Predictive mode: latent sites are replayed from `values` (or drawn from
@@ -341,6 +590,9 @@ impl<'a> Tracer<'a> {
             rng,
             values: Some(values),
             predictive: true,
+            params: None,
+            scale: 1.0,
+            scale_stack: Vec::new(),
             trace: Trace::default(),
         }
     }
@@ -351,6 +603,9 @@ impl<'a> Tracer<'a> {
             rng,
             values: Some(values),
             predictive: false,
+            params: None,
+            scale: 1.0,
+            scale_stack: Vec::new(),
             trace: Trace::default(),
         }
     }
@@ -375,7 +630,7 @@ impl<'a> Handler<f64> for Tracer<'a> {
             }
             None => dist.sample_vec(self.rng),
         };
-        let log_prob = dist.log_prob_data(&value);
+        let log_prob = dist.log_prob_data(&value) * self.scale;
         self.trace.sites.push(TraceSite {
             name: name.to_string(),
             kind: SiteKind::Latent,
@@ -392,7 +647,7 @@ impl<'a> Handler<f64> for Tracer<'a> {
         } else {
             value.to_vec()
         };
-        let log_prob = dist.log_prob_data(&value);
+        let log_prob = dist.log_prob_data(&value) * self.scale;
         self.trace.sites.push(TraceSite {
             name: name.to_string(),
             kind: SiteKind::Observed,
@@ -421,6 +676,37 @@ impl<'a> Handler<f64> for Tracer<'a> {
             support: None,
             event_len: 1,
         });
+    }
+    fn param(&mut self, name: &str, init: &[f64], _support: Support) -> Vec<f64> {
+        match self.params.and_then(|p| p.get(name)) {
+            Some(v) => v.clone(),
+            None => init.to_vec(),
+        }
+    }
+    fn push_scale(&mut self, scale: f64) {
+        self.scale_stack.push(self.scale);
+        self.scale *= scale;
+    }
+    fn pop_scale(&mut self) {
+        self.scale = self.scale_stack.pop().expect("pop_scale without push_scale");
+    }
+    fn sample_given(&mut self, name: &str, value: Vec<f64>, log_prob: f64) -> Vec<f64> {
+        let value = match self.values.and_then(|v| v.get(name)) {
+            Some(v) => v.clone(),
+            None => value,
+        };
+        self.trace.sites.push(TraceSite {
+            name: name.to_string(),
+            kind: SiteKind::Latent,
+            value: value.clone(),
+            log_prob: log_prob * self.scale,
+            support: None,
+            event_len: 1,
+        });
+        value
+    }
+    fn draw<D: Distribution<f64>>(&mut self, dist: D) -> Vec<f64> {
+        dist.sample_vec(self.rng)
     }
 }
 
@@ -467,6 +753,14 @@ impl<'a> Handler<f64> for Postprocess<'a> {
     fn factor(&mut self, _name: &str, _log_factor: f64) {}
     fn deterministic(&mut self, name: &str, value: &[f64]) {
         self.values.push((name.to_string(), value.to_vec()));
+    }
+    fn sample_given(&mut self, name: &str, _value: Vec<f64>, _log_prob: f64) -> Vec<f64> {
+        let info = &self.layout.sites[self.site_idx];
+        debug_assert_eq!(info.name, name);
+        self.site_idx += 1;
+        let v = self.z[info.offset..info.offset + info.unconstrained_len].to_vec();
+        self.values.push((name.to_string(), v.clone()));
+        v
     }
 }
 

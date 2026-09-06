@@ -8,6 +8,7 @@
 //! * [`AIES`], [`ESS`] – gradient-free ensemble samplers (affine-invariant / slice).
 //! * [`MAMS`] – Metropolis-adjusted microcanonical (isokinetic Langevin) sampler.
 //! * [`MCMC`] – warmup + sampling over parallel chains, returning [`Samples`].
+//! * [`svi`] – stochastic variational inference: [`SVI`], autoguides, optimizers.
 
 pub mod adapt;
 pub mod barker;
@@ -17,6 +18,7 @@ pub mod mams;
 pub mod mcmc;
 pub mod mh;
 pub mod potential;
+pub mod svi;
 
 pub use adapt::{AdaptConfig, MassMatrix, WarmupAdapter};
 pub use barker::{BarkerMH, BarkerState};
@@ -26,3 +28,6 @@ pub use mams::{MamsState, MAMS};
 pub use mcmc::{Array, ChainRng, InitStrategy, Kernel, Samples, MCMC};
 pub use mh::{MetropolisHastings, MhState};
 pub use potential::{FnPotential, ModelPotential, Potential};
+pub use svi::{
+    Adam, AutoDelta, AutoDiagonalNormal, AutoMultivariateNormal, ClippedAdam, Optimizer, Sgd, SVI,
+};

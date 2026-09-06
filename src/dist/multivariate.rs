@@ -280,6 +280,28 @@ impl<'a, R: Real> Distribution<R> for MultivariateNormal<'a, R> {
         }
         b.finish(total)
     }
+    fn rsample(&self, rng: &mut dyn RngCore) -> Vec<R> {
+        let k = self.k;
+        let mut out = Vec::with_capacity(self.n * k);
+        let mut eps = vec![0.0; k];
+        for _ in 0..self.n {
+            for e in eps.iter_mut() {
+                *e = rng.sample(StandardNormal);
+            }
+            for r in 0..k {
+                let mut acc = self.loc.get_r(r);
+                for c in 0..=r {
+                    let l = match &self.owned_tril {
+                        Some(t) => R::constant(t[r * k + c]),
+                        None => self.scale_tril.get_r(r * k + c),
+                    };
+                    acc += l * eps[c];
+                }
+                out.push(acc);
+            }
+        }
+        out
+    }
     fn sample(&self, rng: &mut dyn RngCore, out: &mut [f64]) {
         let k = self.k;
         let l = self.tril_vec();

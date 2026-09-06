@@ -20,7 +20,65 @@ pub fn unconstrained_len(support: Support, constrained_len: usize, event_len: us
             let k = corr_dim(event_len);
             (constrained_len / event_len) * (k * (k - 1) / 2)
         }
+        Support::LowerCholesky => {
+            let k = corr_dim(event_len);
+            (constrained_len / event_len) * (k * (k + 1) / 2)
+        }
         _ => constrained_len,
+    }
+}
+
+/// Inverse of [`unconstrained_len`]: constrained scalars for a given number of
+/// unconstrained parameters.
+pub fn constrained_len(support: Support, unconstrained_len: usize, event_len: usize) -> usize {
+    match support {
+        Support::Simplex => unconstrained_len / (event_len - 1) * event_len,
+        Support::CorrCholesky => {
+            let k = corr_dim(event_len);
+            unconstrained_len / (k * (k - 1) / 2) * event_len
+        }
+        Support::LowerCholesky => {
+            let k = corr_dim(event_len);
+            unconstrained_len / (k * (k + 1) / 2) * event_len
+        }
+        _ => unconstrained_len,
+    }
+}
+
+/// Generic (differentiable) inverse transform for the elementwise supports and
+/// ordered vectors. Simplex and Cholesky supports fall back to a constant
+/// inverse (the result is correct in value but carries no gradient).
+pub fn to_unconstrained_r<R: Real>(support: Support, event_len: usize, x: &[R]) -> Vec<R> {
+    match support {
+        Support::Real => x.to_vec(),
+        Support::Positive => x.iter().map(|v| v.ln()).collect(),
+        Support::GreaterThan(lo) => x.iter().map(|v| (*v - lo).ln()).collect(),
+        Support::LessThan(hi) => x.iter().map(|v| (-*v + hi).ln()).collect(),
+        Support::UnitInterval => x.iter().map(|v| v.ln() - (-*v + 1.0).ln()).collect(),
+        Support::Interval(lo, hi) => x
+            .iter()
+            .map(|v| {
+                let p = (*v - lo) / (hi - lo);
+                p.ln() - (-p + 1.0).ln()
+            })
+            .collect(),
+        Support::OrderedVector => {
+            let mut out = Vec::with_capacity(x.len());
+            for row in x.chunks(event_len) {
+                out.push(row[0]);
+                for i in 1..event_len {
+                    out.push((row[i] - row[i - 1]).ln());
+                }
+            }
+            out
+        }
+        _ => {
+            let xf: Vec<f64> = x.iter().map(|v| v.value()).collect();
+            to_unconstrained(support, event_len, &xf)
+                .into_iter()
+                .map(R::constant)
+                .collect()
+        }
     }
 }
 
@@ -58,6 +116,7 @@ pub fn to_constrained<R: Real>(support: Support, event_len: usize, u: &[R], out:
         Support::Simplex => simplex(u, event_len, out),
         Support::OrderedVector => ordered(u, event_len, out),
         Support::CorrCholesky => corr_cholesky(u, corr_dim(event_len), out),
+        Support::LowerCholesky => lower_cholesky(u, corr_dim(event_len), out),
         Support::Boolean | Support::NonNegativeInteger | Support::IntegerInterval(_, _) => {
             panic!("discrete latent sites are not supported by gradient-based inference; observe them or marginalize")
         }
@@ -97,6 +156,19 @@ pub fn to_unconstrained(support: Support, event_len: usize, x: &[f64]) -> Vec<f6
             }
             out
         }
+        Support::LowerCholesky => {
+            let k = corr_dim(event_len);
+            let mut out = Vec::with_capacity(x.len() / event_len * (k * (k + 1) / 2));
+            for l in x.chunks(event_len) {
+                for i in 0..k {
+                    for j in 0..i {
+                        out.push(l[i * k + j]);
+                    }
+                    out.push(l[i * k + i].ln());
+                }
+            }
+            out
+        }
         Support::CorrCholesky => {
             let k = corr_dim(event_len);
             let mut out = Vec::with_capacity(x.len() / event_len * (k * (k - 1) / 2));
@@ -114,6 +186,38 @@ pub fn to_unconstrained(support: Support, event_len: usize, x: &[f64]) -> Vec<f6
         }
         _ => panic!("discrete supports have no unconstraining transform"),
     }
+}
+
+/// Lower-triangular matrix with positive diagonal from `k(k+1)/2` values
+/// (row by row: off-diagonals identity, diagonal `exp`); log|J| = sum of the
+/// diagonal unconstrained values.
+fn lower_cholesky<R: Real>(u: &[R], k: usize, out: &mut Vec<R>) -> R {
+    let m = k * (k + 1) / 2;
+    assert!(
+        u.len().is_multiple_of(m),
+        "lower_cholesky: bad unconstrained length"
+    );
+    let mut total = 0.0;
+    let mut b = R::begin_node(u.len() / m * k);
+    for uu in u.chunks(m) {
+        let start = out.len();
+        out.resize(start + k * k, R::zero());
+        let l = &mut out[start..];
+        let mut idx = 0;
+        for i in 0..k {
+            for j in 0..i {
+                l[i * k + j] = uu[idx];
+                idx += 1;
+            }
+            let d = uu[idx];
+            idx += 1;
+            let e = d.value().exp();
+            l[i * k + i] = R::node(e, &[d], &[e]);
+            total += d.value();
+            b.add(d, 1.0);
+        }
+    }
+    b.finish(total)
 }
 
 /// Ordered vector: `x_0 = u_0`, `x_i = x_{i-1} + exp(u_i)`; log|J| = sum_{i>0} u_i.
@@ -415,6 +519,41 @@ mod tests {
         roundtrip(Support::CorrCholesky, 16, &l4);
         check_logdet(Support::CorrCholesky, 16, &y4);
         assert_eq!(unconstrained_len(Support::CorrCholesky, 32, 16), 12);
+    }
+
+    #[test]
+    fn lower_cholesky_and_generic_inverse() {
+        let u = [0.3, -0.2, 0.7, 1.1, 0.4, -0.5];
+        let mut l = Vec::new();
+        let ld = to_constrained::<f64>(Support::LowerCholesky, 9, &u, &mut l);
+        assert_eq!(l.len(), 9);
+        assert!(
+            l[1] == 0.0 && l[2] == 0.0 && l[5] == 0.0,
+            "upper part is zero: {l:?}"
+        );
+        assert!((l[0] - 0.3f64.exp()).abs() < 1e-12 && (l[3] + 0.2).abs() < 1e-12);
+        assert!((ld - (0.3 + 0.7 - 0.5)).abs() < 1e-12);
+        roundtrip(Support::LowerCholesky, 9, &l);
+        check_logdet(Support::LowerCholesky, 9, &u);
+        assert_eq!(unconstrained_len(Support::LowerCholesky, 18, 9), 12);
+        assert_eq!(constrained_len(Support::LowerCholesky, 12, 9), 18);
+        assert_eq!(constrained_len(Support::Simplex, 4, 3), 6);
+        assert_eq!(constrained_len(Support::CorrCholesky, 6, 16), 16);
+        // generic inverse agrees with the f64 inverse on elementwise supports
+        for (s, x) in [
+            (Support::Positive, vec![0.5, 2.0]),
+            (Support::Interval(-1.0, 3.0), vec![0.2, 2.5]),
+            (Support::UnitInterval, vec![0.2, 0.9]),
+            (Support::GreaterThan(1.0), vec![1.5]),
+            (Support::LessThan(1.0), vec![-3.0]),
+            (Support::OrderedVector, vec![0.1, 0.4, 2.0]),
+        ] {
+            let a = to_unconstrained_r::<f64>(s, x.len(), &x);
+            let b = to_unconstrained(s, x.len(), &x);
+            for (p, q) in a.iter().zip(&b) {
+                assert!((p - q).abs() < 1e-12, "{s:?}");
+            }
+        }
     }
 
     #[test]

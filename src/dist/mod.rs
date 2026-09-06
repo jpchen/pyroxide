@@ -66,6 +66,9 @@ pub enum Support {
     /// Lower Cholesky factors of correlation matrices (event is a row-major
     /// `k x k` matrix with `event_len = k * k`).
     CorrCholesky,
+    /// Lower-triangular matrices with positive diagonal (row-major `k x k`,
+    /// `event_len = k * k`); `k(k+1)/2` free parameters.
+    LowerCholesky,
 }
 
 impl Support {
@@ -388,6 +391,132 @@ pub trait Distribution<R: Real> {
         let mut out = vec![0.0; self.len()];
         self.sample(rng, &mut out);
         out
+    }
+
+    /// Reparameterized sample: a draw expressed as a differentiable function
+    /// of the parameters (e.g. `loc + scale * eps`). Used by variational
+    /// inference. Families without a reparameterization panic.
+    fn rsample(&self, _rng: &mut dyn RngCore) -> Vec<R> {
+        panic!("this distribution has no reparameterized sampler (needed for SVI guides)")
+    }
+
+    /// Reparameterized sample together with its log density.
+    fn rsample_log_prob(&self, rng: &mut dyn RngCore) -> (Vec<R>, R) {
+        let x = self.rsample(rng);
+        let lp = self.log_prob(&x);
+        (x, lp)
+    }
+}
+
+// ------------------------------------------------------------------- Delta ---
+
+/// A point mass at `value` (log density zero). Used by MAP guides
+/// (`AutoDelta`) and to record fixed values as sample sites.
+#[derive(Clone, Copy, Debug)]
+pub struct Delta<'a, R> {
+    pub value: Param<'a, R>,
+    pub support: Support,
+}
+
+impl<'a, R: Real> Delta<'a, R> {
+    pub fn new(value: impl IntoParam<'a, R>) -> Self {
+        Delta {
+            value: value.into_param(),
+            support: Support::Real,
+        }
+    }
+    pub fn with_support(mut self, support: Support) -> Self {
+        self.support = support;
+        self
+    }
+}
+
+impl<'a, R: Real> Distribution<R> for Delta<'a, R> {
+    fn len(&self) -> usize {
+        self.value.len()
+    }
+    fn support(&self) -> Support {
+        self.support
+    }
+    fn log_prob_value(&self, _x: Value<'_, R>) -> R {
+        R::zero()
+    }
+    fn sample(&self, _rng: &mut dyn RngCore, out: &mut [f64]) {
+        for (i, o) in out.iter_mut().enumerate() {
+            *o = self.value.get(i);
+        }
+    }
+    fn rsample(&self, _rng: &mut dyn RngCore) -> Vec<R> {
+        self.value.to_vec(self.value.len())
+    }
+}
+
+// ------------------------------------------------------------- Transformed ---
+
+/// A base distribution on unconstrained space pushed through the constraining
+/// transform of `support` (numpyro's `TransformedDistribution` for the
+/// standard bijections). Draws are `T(u)`, `u ~ base`; the log density is
+/// `base.log_prob(T^{-1}(x)) - log|det J_T(T^{-1}(x))|`.
+///
+/// This is how autoguides place a Normal over an unconstrained parameter and
+/// hand the model a constrained value.
+#[derive(Clone, Copy, Debug)]
+pub struct Transformed<D> {
+    pub base: D,
+    pub support: Support,
+    event_len: usize,
+}
+
+impl<D> Transformed<D> {
+    /// `event_len` is the constrained event size (1 for scalar supports, `k`
+    /// for a simplex, `k*k` for Cholesky factors).
+    pub fn new(base: D, support: Support, event_len: usize) -> Self {
+        Transformed {
+            base,
+            support,
+            event_len,
+        }
+    }
+}
+
+impl<R: Real, D: Distribution<R>> Distribution<R> for Transformed<D> {
+    fn len(&self) -> usize {
+        crate::model::transform::constrained_len(self.support, self.base.len(), self.event_len)
+    }
+    fn event_len(&self) -> usize {
+        self.event_len
+    }
+    fn support(&self) -> Support {
+        self.support
+    }
+    fn log_prob_value(&self, x: Value<'_, R>) -> R {
+        // invert generically where possible; fall back to a constant inverse
+        let xs: Vec<R> = (0..x.len())
+            .map(|i| match x {
+                Value::Latent(v) => v[i],
+                Value::Data(v) => R::constant(v[i]),
+            })
+            .collect();
+        let u = crate::model::transform::to_unconstrained_r(self.support, self.event_len, &xs);
+        let mut back = Vec::with_capacity(xs.len());
+        let logdet = crate::model::transform::to_constrained(self.support, self.event_len, &u, &mut back);
+        self.base.log_prob(&u) - logdet
+    }
+    fn sample(&self, rng: &mut dyn RngCore, out: &mut [f64]) {
+        let u = self.base.sample_vec(rng);
+        let mut x = Vec::with_capacity(out.len());
+        crate::model::transform::to_constrained::<f64>(self.support, self.event_len, &u, &mut x);
+        out.copy_from_slice(&x);
+    }
+    fn rsample(&self, rng: &mut dyn RngCore) -> Vec<R> {
+        self.rsample_log_prob(rng).0
+    }
+    fn rsample_log_prob(&self, rng: &mut dyn RngCore) -> (Vec<R>, R) {
+        let u = self.base.rsample(rng);
+        let mut x = Vec::with_capacity(self.len());
+        let logdet = crate::model::transform::to_constrained(self.support, self.event_len, &u, &mut x);
+        let lp = self.base.log_prob(&u) - logdet;
+        (x, lp)
     }
 }
 

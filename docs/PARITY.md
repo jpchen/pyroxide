@@ -34,19 +34,19 @@ Priority reflects the plan: **P0** this round, **P1** next, **P2** later.
 
 | NumPyro | pyroxide | priority | notes |
 |---|---|---|---|
-| `SVI` loop | ⬜ | P0 (next) | see DESIGN §13 for the plan |
-| `Trace_ELBO` | ⬜ | P0 | reparameterized single-sample ELBO |
+| `SVI` loop | ✅ `SVI` | | `step`, `run`, `run_with` (minibatch hook), `evaluate`, `sample_posterior` |
+| `Trace_ELBO` | ✅ | | reparameterized, `num_particles` samples |
 | `TraceMeanField_ELBO` | ⬜ | P1 | analytic KL where available |
 | `TraceGraph_ELBO` / `TraceEnum_ELBO` | ✖ | | non-reparameterized / enumerated sites |
 | `RenyiELBO` | ⬜ | P2 | |
-| `AutoNormal` / `AutoDiagonalNormal` | ⬜ | P0 | |
-| `AutoMultivariateNormal` / `AutoLowRankMultivariateNormal` | ⬜ | P1 | |
-| `AutoDelta` (MAP) | ⬜ | P0 | |
+| `AutoNormal` / `AutoDiagonalNormal` | ✅ `AutoDiagonalNormal` | | |
+| `AutoMultivariateNormal` / `AutoLowRankMultivariateNormal` | 🟡 | P1 | full-rank ✅; low-rank ⬜ |
+| `AutoDelta` (MAP) | ✅ | | |
 | `AutoLaplaceApproximation` | ⬜ | P1 | Hessian via finite differences of the gradient |
 | `AutoIAFNormal` / `AutoBNAFNormal` / `AutoDAIS` | ✖ | | normalizing-flow guides |
-| custom guides | ⬜ | P0 | a guide is a `Model` that calls `param` |
-| optimizers (`Adam`, `ClippedAdam`, `SGD`, `RMSProp`, ...) | ⬜ | P0 | Adam first |
-| minibatching (`plate(subsample_size)`) | ⬜ | P0 | `Handler::scale` + `Subsample` plate helper |
+| custom guides | ✅ | | a guide is a `Model` that calls `param`; `draw` + `sample_given` for joint draws |
+| optimizers (`Adam`, `ClippedAdam`, `SGD`, `RMSProp`, ...) | 🟡 | P1 | Adam, ClippedAdam, Sgd ✅ |
+| minibatching (`plate(subsample_size)`) | ✅ | | `push_scale`/`pop_scale` + `subsample`; unbiasedness tested |
 | `SteinVI` (contrib.einstein) | ✖ | | |
 
 ## Sequential Monte Carlo
@@ -68,7 +68,7 @@ for how it maps onto pyroxide's handler model without coroutines.
 | | LKJ (full matrix), MultivariateStudentT, LowRankMultivariateNormal, MatrixNormal, Wishart, InverseWishart, GaussianRandomWalk, GaussianStateSpace, CAR, ZeroSumNormal, GaussianCopula | ⬜ | P1–P2 |
 | directional | VonMises, ProjectedNormal, SineBivariateVonMises | ⬜ | P2 |
 | mixtures | MixtureSameFamily, MixtureGeneral | ⬜ | P1 (expressible today with `factor` + `logsumexp`) |
-| `ImproperUniform`, `Unit`, `Delta` | 🟡 | | ImproperUniform ✅ |
+| `ImproperUniform`, `Unit`, `Delta` | 🟡 | | ImproperUniform ✅, Delta ✅ |
 | `Ordered` restriction | ✅ (`Ordered<D>`, not in NumPyro) | | |
 | `Independent` / `expand` / `to_event` shape algebra | 🟡 | | flat `len`/`event_len` model instead of batch/event shapes |
 | KL divergences (`kl_divergence`) | ⬜ | P1 | needed for `TraceMeanField_ELBO` |
@@ -82,10 +82,10 @@ for how it maps onto pyroxide's handler model without coroutines.
 | simplex (stick-breaking) | ✅ | |
 | ordered vector | ✅ | |
 | corr_cholesky | ✅ | |
-| lower_cholesky, scaled_unit_lower_cholesky, softplus variants | ⬜ | P1 |
+| lower_cholesky, scaled_unit_lower_cholesky, softplus variants | 🟡 (`LowerCholesky` ✅) | P1 |
 | positive_definite (via Cholesky) | ⬜ | P1 |
 | l1_ball, sphere, circular, zero_sum | ⬜ | P2 |
-| user-defined `TransformedDistribution` | ⬜ | P1 — `Transformed<D, T>` wrapper with `Transform<R>` trait |
+| user-defined `TransformedDistribution` | 🟡 `Transformed<D>` over the built-in supports | P1 — arbitrary `Transform<R>` trait |
 | `Affine`, `Exp`, `Sigmoid`, `Power`, `Compose` transforms | ⬜ | P1 (with the above) |
 
 ## Handlers and model utilities
@@ -99,8 +99,8 @@ for how it maps onto pyroxide's handler model without coroutines.
 | `log_likelihood` | ⬜ | P1 | one more handler: per-site observed log_prob per draw |
 | `deterministic` | ✅ | | |
 | `factor` | ✅ | | |
-| `plate` (independence + subsampling) | 🟡 | P0 | plates are implicit via `expand`; subsampling needs `Handler::scale` |
-| `scale`, `mask` | ⬜ | P0/P1 | `scale` is required for minibatch VI |
+| `plate` (independence + subsampling) | ✅ | | plates via `expand`; subsampling via `push_scale` + `subsample` |
+| `scale`, `mask` | 🟡 | P1 | `push_scale` ✅; `mask` ⬜ |
 | `block`, `reparam`, `lift`, `do`, `collapse`, `infer_config` | ⬜ | P2 | reparam is a modeling idiom here (write the non-centered form) |
 | `render_model` | ⬜ | P2 | graphviz from a `Trace` |
 | `format_shapes` | ⬜ | P2 | |

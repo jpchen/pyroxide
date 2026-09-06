@@ -539,6 +539,19 @@ summary:
   in warmup there, so the comparison is purely per-gradient cost — about 40 µs
   in pyroxide's scalar loop against ~12 µs for XLA's SIMD-vectorized likelihood.
   SIMD kernels for the plate loops are the next step (§11).
+* The third round added four kernels to the matrix. MAMS in pyroxide runs
+  12–350× faster than the numpyro `contrib.microcanonical` port on the small
+  models with matching effective sample sizes and acceptance rates (both ports
+  take the same number of integrator steps — 1000 on the funnel and the 100-d
+  Gaussian, ~1800 on eight schools — so this is per-step overhead), and 1.1×
+  on the hierarchical regression where the gradient dominates. Barker MH is
+  2–46× faster with better-adapted acceptance (0.35–0.43 against a 0.4 target;
+  numpyro's restarts leave it at 0.21–0.30). The ensemble samplers are 2–32×
+  faster with 20 walkers; with 220 walkers on the 2000-row hierarchical model
+  numpyro's vectorized evaluation of all walkers in one XLA call wins (0.2× for
+  AIES, 1.3× for ESS) — the one place a `vmap`-style batched potential would
+  pay off. Both libraries agree closely on the sampler statistics themselves
+  (leapfrog counts, acceptance, R-hat), which is the port-fidelity check.
 * HMC with a fixed `2π` trajectory is a poor sampler on several of these
   targets in *both* libraries (ESS of 3–30, R-hat > 2 on the Gaussian, whose
   period is exactly 2π). It is included because it is the same algorithm with
@@ -728,10 +741,17 @@ Neither requires changing the scalar tape; both are additive crates.
 
 ---
 
-## 13. Variational inference: plan
+## 13. Variational inference
 
-SVI reuses everything above except the kernel. The pieces, in the order they
-will land:
+*Status: implemented as planned below (`src/infer/svi/`): `SVI`, `Trace_ELBO`
+with `num_particles`, `AutoDelta`, `AutoDiagonalNormal`,
+`AutoMultivariateNormal`, `Adam`/`ClippedAdam`/`Sgd`, `push_scale`/`pop_scale`
+minibatching with the `subsample` helper, and the tests of §13.5. The one
+deviation from the sketch: the parameter method is `param(name, init,
+support)` and the joint-draw idiom is `draw` + `sample_given` rather than a
+separate `rsample` handler method.*
+
+SVI reuses everything above except the kernel. The pieces:
 
 ### 13.1 Parameters and guides
 
@@ -808,7 +828,7 @@ subset of indices and it scales the log density of everything inside by
 `N / n`. pyroxide makes both explicit and both trivial to test:
 
 ```rust
-struct Regression { x: Vec<f64>, y: Vec<f64>, batch: Vec<usize> }   // batch set per step
+struct Regression { x: Vec<f64>, y: Vec<f64>, batch: Mutex<Option<Vec<usize>>> }   // batch set per step
 
 impl Model for Regression {
     fn run<R: Real, H: Handler<R>>(&self, h: &mut H) {
@@ -828,8 +848,8 @@ impl Model for Regression {
 `SVI::run_minibatch(seed, steps, |step, rng| model.set_batch(...))` (or the
 user resampling `batch` in the callback) is the loop; a `Subsample::draw(rng,
 N, n)` helper provides the index sampling. Because the model owns its data and
-`run` takes `&self`, the batch is stored behind a `RefCell`/`Cell` or the model
-is rebuilt per step — both are cheap. Since minibatch gradients are unbiased
+`run` takes `&self` and models are `Sync`, the batch is stored behind a `Mutex`
+or the model is rebuilt per step — both are cheap. Since minibatch gradients are unbiased
 for the full ELBO gradient, the same `Trace_ELBO` code applies unchanged; the
 scaled `observe` is the only new handler semantics, and `LogDensity` honours it
 too, so MCMC kernels get **stochastic-gradient variants for free** (SGLD /

@@ -8,6 +8,7 @@
 - [Writing models](models.md)
 - [Distributions](distributions.md)
 - [Inference](inference.md)
+- [Variational inference](svi.md)
 - [Diagnostics and predictive checks](diagnostics.md)
 
 # Reference

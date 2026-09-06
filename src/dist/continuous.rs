@@ -62,6 +62,14 @@ impl<'a, R: Real> Distribution<R> for Normal<'a, R> {
             (lp, [-dz, (z * z - 1.0) * inv_s], dz)
         })
     }
+    fn rsample(&self, rng: &mut dyn RngCore) -> Vec<R> {
+        (0..self.n)
+            .map(|i| {
+                let e: f64 = rng.sample(StandardNormal);
+                self.loc.get_r(i) + self.scale.get_r(i) * e
+            })
+            .collect()
+    }
     fn sample(&self, rng: &mut dyn RngCore, out: &mut [f64]) {
         for (i, o) in out.iter_mut().enumerate() {
             let e: f64 = rng.sample(StandardNormal);
@@ -111,6 +119,14 @@ impl<'a, R: Real> Distribution<R> for LogNormal<'a, R> {
             (lp, [z * inv_s, (z * z - 1.0) * inv_s], (-z * inv_s - 1.0) / x)
         })
     }
+    fn rsample(&self, rng: &mut dyn RngCore) -> Vec<R> {
+        (0..self.n)
+            .map(|i| {
+                let e: f64 = rng.sample(StandardNormal);
+                (self.loc.get_r(i) + self.scale.get_r(i) * e).exp()
+            })
+            .collect()
+    }
     fn sample(&self, rng: &mut dyn RngCore, out: &mut [f64]) {
         for (i, o) in out.iter_mut().enumerate() {
             let e: f64 = rng.sample(StandardNormal);
@@ -157,6 +173,14 @@ impl<'a, R: Real> Distribution<R> for HalfNormal<'a, R> {
             }
             (lp, [(z * z - 1.0) * inv_s], -z * inv_s)
         })
+    }
+    fn rsample(&self, rng: &mut dyn RngCore) -> Vec<R> {
+        (0..self.n)
+            .map(|i| {
+                let e: f64 = rng.sample(StandardNormal);
+                self.scale.get_r(i) * e.abs()
+            })
+            .collect()
     }
     fn sample(&self, rng: &mut dyn RngCore, out: &mut [f64]) {
         for (i, o) in out.iter_mut().enumerate() {
@@ -210,6 +234,14 @@ impl<'a, R: Real> Distribution<R> for Cauchy<'a, R> {
         univariate([self.loc, self.scale], x, self.n, |[mu, s], x| {
             cauchy_lp(mu, s, x, R::DIFFERENTIABLE)
         })
+    }
+    fn rsample(&self, rng: &mut dyn RngCore) -> Vec<R> {
+        (0..self.n)
+            .map(|i| {
+                let u: f64 = rng.random();
+                self.loc.get_r(i) + self.scale.get_r(i) * (std::f64::consts::PI * (u - 0.5)).tan()
+            })
+            .collect()
     }
     fn sample(&self, rng: &mut dyn RngCore, out: &mut [f64]) {
         for (i, o) in out.iter_mut().enumerate() {
@@ -369,6 +401,15 @@ impl<'a, R: Real> Distribution<R> for Uniform<'a, R> {
             (lp, [1.0 / w, -1.0 / w], 0.0)
         })
     }
+    fn rsample(&self, rng: &mut dyn RngCore) -> Vec<R> {
+        (0..self.n)
+            .map(|i| {
+                let u: f64 = rng.random();
+                let lo = self.low.get_r(i);
+                lo + (self.high.get_r(i) - lo) * u
+            })
+            .collect()
+    }
     fn sample(&self, rng: &mut dyn RngCore, out: &mut [f64]) {
         for (i, o) in out.iter_mut().enumerate() {
             let u: f64 = rng.random();
@@ -410,6 +451,14 @@ impl<'a, R: Real> Distribution<R> for Exponential<'a, R> {
             }
             (r.ln() - r * x, [1.0 / r - x], -r)
         })
+    }
+    fn rsample(&self, rng: &mut dyn RngCore) -> Vec<R> {
+        (0..self.n)
+            .map(|i| {
+                let e: f64 = rng.sample(rand_distr::Exp1);
+                self.rate.get_r(i).recip() * e
+            })
+            .collect()
     }
     fn sample(&self, rng: &mut dyn RngCore, out: &mut [f64]) {
         for (i, o) in out.iter_mut().enumerate() {
@@ -664,6 +713,15 @@ impl<'a, R: Real> Distribution<R> for Laplace<'a, R> {
             let sgn = if d >= 0.0 { 1.0 } else { -1.0 };
             (lp, [sgn / b, -1.0 / b + ad / (b * b)], -sgn / b)
         })
+    }
+    fn rsample(&self, rng: &mut dyn RngCore) -> Vec<R> {
+        (0..self.n)
+            .map(|i| {
+                let u: f64 = rng.random::<f64>() - 0.5;
+                let sgn = if u >= 0.0 { 1.0 } else { -1.0 };
+                self.loc.get_r(i) - self.scale.get_r(i) * (sgn * (1.0 - 2.0 * u.abs()).ln())
+            })
+            .collect()
     }
     fn sample(&self, rng: &mut dyn RngCore, out: &mut [f64]) {
         for (i, o) in out.iter_mut().enumerate() {

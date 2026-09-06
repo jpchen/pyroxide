@@ -1,7 +1,8 @@
 # pyroxide
 
 Fast, decoupled probabilistic programming in Rust: write a generative model once,
-run it under NUTS, MAMS, HMC, Barker MH, ensemble samplers, or Metropolis–Hastings.
+run it under NUTS, MAMS, HMC, Barker MH, ensemble samplers, Metropolis–Hastings,
+or fit it with stochastic variational inference (with minibatching).
 
 pyroxide re-creates the core of [NumPyro](https://github.com/pyro-ppl/numpyro)
 without JAX: a Stan-style reverse-mode autodiff tape, distributions with
@@ -25,8 +26,9 @@ beyond `rand`, `rayon` and `rustfft`.
   1000 samples: NUTS is 10–68× faster than NumPyro's compiled sampler on eight
   schools, Neal's funnel, baseball and a 100-d Gaussian (same ESS), 1.5–1.9× faster
   on logistic regression (1000 rows) and a 2000-row hierarchical regression;
-  Metropolis–Hastings is 2–40× faster. The warmup adaptation is a numerically
-  exact port (identical step-size trajectories to five digits).
+  Metropolis–Hastings is 2–40× faster; MAMS is 12–350× faster than numpyro's
+  contrib port on small models and Barker MH 2–46×. The warmup adaptation is a
+  numerically exact port (identical step-size trajectories to five digits).
 
 ## Example
 
@@ -90,12 +92,13 @@ let samples = MCMC::new(HmcKernel::nuts(banana), 1000, 2000).run(1);
 | `dist` | Normal, LogNormal, HalfNormal, Cauchy, HalfCauchy, StudentT, Uniform, Exponential, Gamma, InverseGamma, Beta, Pareto, Laplace, ImproperUniform, Bernoulli, Binomial, Poisson, Categorical, Dirichlet, MultivariateNormal, LKJCholesky, `Ordered<D>` |
 | `model` | `Model` / `Handler` traits, constraint transforms (positive, interval, simplex, ordered, correlation Cholesky), layout discovery, log-density / tracing / postprocessing handlers, `Predictive` |
 | `infer` | `Potential`; kernels `HmcKernel` (NUTS + HMC), `MAMS` (adjusted microcanonical), `BarkerMH`, `AIES` / `ESS` (ensemble), `MetropolisHastings`; warmup adaptation; `MCMC` driver with parallel chains; `Samples` |
+| `infer::svi` | `SVI` with the reparameterized ELBO, `AutoDelta` / `AutoDiagonalNormal` / `AutoMultivariateNormal`, `Adam` / `ClippedAdam` / `Sgd`, minibatching via `push_scale` + `subsample` |
 | `diagnostics` | ESS, R-hat, split R-hat, HPDI, autocorrelation, summary table |
 
 ## Tests
 
 ```
-cargo test            # 61 unit tests + 20 end-to-end posterior tests + 8 doctests
+cargo test            # 70 unit tests + 26 end-to-end posterior tests + 9 doctests
 ```
 
 The end-to-end tests are ports of NumPyro's `test_mcmc.py`: they run full
@@ -113,10 +116,11 @@ both libraries and writes `benchmarks/RESULTS.md`.
 
 ## Status
 
-Early but complete for its scope: the two MCMC algorithms, 21 distributions, the
-model layer and predictive simulation are implemented and tested. Not yet: variational inference,
-discrete latent enumeration, a broadcasting shape system, GPU. See the roadmap
-in `docs/DESIGN.md`.
+Seven MCMC kernels, SVI with autoguides and minibatching, 22 distributions, the
+model layer and predictive simulation are implemented and tested. Not yet:
+discrete latent enumeration, a broadcasting shape system, GPU. See
+`docs/PARITY.md` for the feature-by-feature status against NumPyro and the
+roadmap in `docs/DESIGN.md`.
 
 ## License
 

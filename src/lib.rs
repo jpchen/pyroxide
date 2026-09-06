@@ -32,9 +32,10 @@ pub use ad::{Real, Var};
 pub mod prelude {
     pub use crate::ad::{Real, Var};
     pub use crate::dist::*;
+    pub use crate::infer::svi::subsample;
     pub use crate::infer::{
-        BarkerMH, FnPotential, HmcKernel, InitStrategy, MetropolisHastings, ModelPotential, Potential,
-        Samples, AIES, ESS, MAMS, MCMC,
+        Adam, AutoDelta, AutoDiagonalNormal, AutoMultivariateNormal, BarkerMH, FnPotential, HmcKernel,
+        InitStrategy, MetropolisHastings, ModelPotential, Potential, Samples, AIES, ESS, MAMS, MCMC, SVI,
     };
     pub use crate::model::{Handler, Model, Predictive};
 }
