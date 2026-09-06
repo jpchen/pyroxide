@@ -193,6 +193,14 @@ pub trait Real: Copy + Add + Sub + Mul + Div + … {
 }
 ```
 
+Two smaller tricks matter for regression-style models where the linear
+predictor, not the likelihood, dominates: `matvec_const` pushes all `n` rows of
+`X·β` under one tape borrow (one node per row with `k` parents), and
+`mul_add` / `fma` fuse `a + b·x` into one node instead of two. The first
+benchmark round showed exactly this: the 2000-observation hierarchical
+regression was on par with XLA until the per-observation `mul` + `add` pair was
+fused and `log σ` was hoisted out of the plate loop for scalar scales.
+
 `Var` is a 16-byte `Copy` value (value + tape index). The tape is thread-local,
 so parallel chains never contend, and `reset()` keeps the allocated capacity so
 steady-state sampling does not allocate for autodiff at all.
@@ -450,7 +458,44 @@ Methodology notes:
 * Efficiency is reported as minimum ESS per second, since raw wall time can be
   gamed by a poorly adapted sampler that takes shorter trajectories.
 
-See `benchmarks/RESULTS.md` for the numbers on this machine.
+### 10.1 Validation of the port
+
+Before comparing speed we checked that the two implementations do the *same
+thing*. Running numpyro's HMC on the hierarchical-regression benchmark with
+`collect_warmup=True` and comparing the adapted step size after each of the
+first warmup iterations against pyroxide's gives identical trajectories to five
+significant digits (2.33506, 0.230240, 0.0166900, 0.00107, …), and both
+libraries take ~80 000 leapfrog steps during HMC warmup on that model (the
+fixed-trajectory-length pathology when the early step size is tiny — the reason
+NUTS exists). The dual-averaging, windowing and integrator arithmetic are
+therefore bit-for-bit the same algorithm; remaining differences are RNG streams.
+
+### 10.2 What the numbers say
+
+`benchmarks/RESULTS.md` holds the table for this machine (Apple M4 Max). In
+summary:
+
+* On small and medium models (eight schools, Neal's funnel, baseball, a 100-d
+  Gaussian) pyroxide's NUTS is **10–70× faster** than numpyro's compiled sampler
+  and produces the same effective sample sizes; Metropolis–Hastings is 15–40×
+  faster. Here XLA's per-iteration control-flow overhead dominates numpyro, and
+  pyroxide's allocation-free tree builder has essentially none.
+* On models whose cost is a large vectorized likelihood (logistic regression
+  with 1000 rows, hierarchical regression with 2000 rows) the two are within a
+  small factor of each other. XLA vectorizes the per-observation arithmetic with
+  SIMD; pyroxide evaluates it in a scalar loop with one tape node per row of the
+  linear predictor. Fusing `a + b·x` into one node and hoisting `log σ` out of
+  the plate loop (first benchmark round → second, both kept under
+  `benchmarks/results/`) moved NUTS on these two models from parity to 1.5×
+  faster than numpyro. Fixed-length HMC on the hierarchical regression is the
+  one row where numpyro wins (≈5×): both libraries spend ~80 000 leapfrog steps
+  in warmup there, so the comparison is purely per-gradient cost — about 40 µs
+  in pyroxide's scalar loop against ~12 µs for XLA's SIMD-vectorized likelihood.
+  SIMD kernels for the plate loops are the next step (§11).
+* HMC with a fixed `2π` trajectory is a poor sampler on several of these
+  targets in *both* libraries (ESS of 3–30, R-hat > 2 on the Gaussian, whose
+  period is exactly 2π). It is included because it is the same algorithm with
+  the same defaults on both sides, not because anyone should use it that way.
 
 ---
 

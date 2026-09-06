@@ -109,7 +109,7 @@ impl Model for HierRegression {
         for g in 0..self.groups {
             for i in 0..self.n_per {
                 let idx = g * self.n_per + i;
-                mean.push(a[g] + b[g] * self.x[idx]);
+                mean.push(b[g].mul_add(self.x[idx], a[g]));
             }
         }
         h.observe("y", Normal::new(&mean, sigma), &self.y);

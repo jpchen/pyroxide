@@ -5,7 +5,7 @@ use rand::{Rng, RngCore};
 use rand_distr::Distribution as _;
 
 use super::{broadcast_len, univariate, Distribution, IntoParam, Param, Support, Value};
-use crate::ad::{sigmoid_f64, softplus_f64, NodeBuilder, Real};
+use crate::ad::{sigmoid_f64, softplus_sigmoid_f64, NodeBuilder, Real};
 use crate::special::{ln_binomial, ln_gamma};
 
 /// Either a probability or a logit parameterization.
@@ -85,13 +85,9 @@ impl<'a, R: Real> Distribution<R> for Bernoulli<'a, R> {
                 if x != 0.0 && x != 1.0 {
                     return (f64::NEG_INFINITY, [0.0], 0.0);
                 }
-                // log p(x) = x*l - softplus(l)
-                let lp = if x == 1.0 {
-                    -softplus_f64(-l)
-                } else {
-                    -softplus_f64(l)
-                };
-                (lp, [x - sigmoid_f64(l)], 0.0)
+                // log p(x) = x*l - softplus(l); softplus and sigmoid share one exp
+                let (sp, sg) = softplus_sigmoid_f64(l);
+                (x * l - sp, [x - sg], 0.0)
             }),
         }
     }
@@ -196,10 +192,11 @@ fn binomial_logits<R: Real>(tc: Param<'_, R>, l: Param<'_, R>, x: Value<'_, R>, 
             continue;
         }
         // x*l - n*softplus(l) + log C(n, x)
-        let lp = ln_binomial(nn, xx) + xx * ll - nn * softplus_f64(ll);
+        let (sp, sg) = softplus_sigmoid_f64(ll);
+        let lp = ln_binomial(nn, xx) + xx * ll - nn * sp;
         total += lp;
         if R::DIFFERENTIABLE {
-            g.add(&mut b, i, xx - nn * sigmoid_f64(ll));
+            g.add(&mut b, i, xx - nn * sg);
         }
     }
     g.finish(&mut b);

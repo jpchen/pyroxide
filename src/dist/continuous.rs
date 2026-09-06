@@ -47,10 +47,14 @@ impl<'a, R: Real> Distribution<R> for Normal<'a, R> {
         Support::Real
     }
     fn log_prob_value(&self, x: Value<'_, R>) -> R {
+        // hoist log(scale) and 1/scale when the scale is shared across the plate
+        let shared = self.scale.is_scalar();
+        let s0 = self.scale.get(0);
+        let (ls0, inv0) = (s0.ln(), 1.0 / s0);
         univariate([self.loc, self.scale], x, self.n, |[mu, s], x| {
-            let inv_s = 1.0 / s;
+            let (ls, inv_s) = if shared { (ls0, inv0) } else { (s.ln(), 1.0 / s) };
             let z = (x - mu) * inv_s;
-            let lp = -0.5 * z * z - s.ln() - 0.5 * LN_2PI;
+            let lp = -0.5 * z * z - ls - 0.5 * LN_2PI;
             if !R::DIFFERENTIABLE {
                 return (lp, [0.0; 2], 0.0);
             }

@@ -356,6 +356,27 @@ pub trait Real:
     fn softplus(self) -> Self;
     /// `log Gamma(x)`
     fn ln_gamma(self) -> Self;
+    /// Fused `self * m + add` with a constant multiplier: one tape node.
+    fn mul_add(self, m: f64, add: Self) -> Self {
+        self * m + add
+    }
+    /// Fused `self * m + add` with differentiable `m`: one tape node.
+    fn fma(self, m: Self, add: Self) -> Self {
+        self * m + add
+    }
+    /// Dot product with constant weights as one node (see [`dot_const`]).
+    fn dot_const(xs: &[Self], w: &[f64]) -> Self {
+        let total: f64 = xs.iter().zip(w).map(|(x, w)| x.value() * w).sum();
+        let mut b = Self::begin_node(xs.len());
+        for (&x, &w) in xs.iter().zip(w) {
+            b.add(x, w);
+        }
+        b.finish(total)
+    }
+    /// Row-major `n x k` constant matrix times `v` (see [`matvec_const`]).
+    fn matvec_const(mat: &[f64], n: usize, k: usize, v: &[Self]) -> Vec<Self> {
+        (0..n).map(|i| Self::dot_const(v, &mat[i * k..(i + 1) * k])).collect()
+    }
     /// Elementwise maximum by value (gradient flows to the larger argument).
     fn max(self, other: Self) -> Self {
         if self.value() >= other.value() {
@@ -482,6 +503,18 @@ pub fn softplus_f64(x: f64) -> f64 {
     }
 }
 
+/// `(softplus(x), sigmoid(x))` sharing a single `exp`.
+#[inline]
+pub fn softplus_sigmoid_f64(x: f64) -> (f64, f64) {
+    let e = (-x.abs()).exp(); // in (0, 1]
+    let l1pe = e.ln_1p();
+    if x >= 0.0 {
+        (x + l1pe, 1.0 / (1.0 + e))
+    } else {
+        (l1pe, e / (1.0 + e))
+    }
+}
+
 /// Numerically stable `log(exp(a) + exp(b))`.
 #[inline]
 pub fn logaddexp(a: f64, b: f64) -> f64 {
@@ -594,6 +627,65 @@ impl Real for Var {
     #[inline]
     fn ln_gamma(self) -> Var {
         self.unary(ln_gamma(self.val), digamma(self.val))
+    }
+    #[inline]
+    fn mul_add(self, m: f64, add: Var) -> Var {
+        self.binary(add, self.val * m + add.val, m, 1.0)
+    }
+    #[inline]
+    fn fma(self, m: Var, add: Var) -> Var {
+        let val = self.val * m.val + add.val;
+        let idx = TAPE.with(|t| {
+            let mut t = t.borrow_mut();
+            let idx = t.len() as u32;
+            t.parents.extend_from_slice(&[self.idx, m.idx, add.idx]);
+            t.weights.extend_from_slice(&[m.val, self.val, 1.0]);
+            let end = t.parents.len() as u32;
+            t.starts.push(end);
+            idx
+        });
+        Var { val, idx }
+    }
+    /// Single tape borrow, parents and weights pushed straight onto the tape.
+    fn dot_const(xs: &[Var], w: &[f64]) -> Var {
+        debug_assert_eq!(xs.len(), w.len());
+        let total: f64 = xs.iter().zip(w).map(|(x, w)| x.val * w).sum();
+        let idx = TAPE.with(|t| {
+            let mut t = t.borrow_mut();
+            let idx = t.len() as u32;
+            t.parents.extend(xs.iter().map(|x| x.idx));
+            t.weights.extend_from_slice(w);
+            let end = t.parents.len() as u32;
+            t.starts.push(end);
+            idx
+        });
+        Var { val: total, idx }
+    }
+    /// All `n` output nodes are pushed under one tape borrow.
+    fn matvec_const(mat: &[f64], n: usize, k: usize, v: &[Var]) -> Vec<Var> {
+        debug_assert_eq!(mat.len(), n * k);
+        debug_assert_eq!(v.len(), k);
+        let mut out = Vec::with_capacity(n);
+        TAPE.with(|t| {
+            let mut t = t.borrow_mut();
+            t.parents.reserve(n * k);
+            t.weights.reserve(n * k);
+            t.starts.reserve(n);
+            for i in 0..n {
+                let row = &mat[i * k..(i + 1) * k];
+                let mut total = 0.0;
+                for (x, w) in v.iter().zip(row) {
+                    total += x.val * w;
+                }
+                let idx = t.len() as u32;
+                t.parents.extend(v.iter().map(|x| x.idx));
+                t.weights.extend_from_slice(row);
+                let end = t.parents.len() as u32;
+                t.starts.push(end);
+                out.push(Var { val: total, idx });
+            }
+        });
+        out
     }
 }
 
@@ -752,12 +844,7 @@ pub fn sum<R: Real>(xs: &[R]) -> R {
 /// Dot product of a differentiable vector with constant weights, as one node.
 pub fn dot_const<R: Real>(xs: &[R], w: &[f64]) -> R {
     debug_assert_eq!(xs.len(), w.len());
-    let total: f64 = xs.iter().zip(w).map(|(x, w)| x.value() * w).sum();
-    let mut b = R::begin_node(xs.len());
-    for (&x, &w) in xs.iter().zip(w) {
-        b.add(x, w);
-    }
-    b.finish(total)
+    R::dot_const(xs, w)
 }
 
 /// Dot product of two differentiable vectors, as one node.
@@ -777,7 +864,7 @@ pub fn dot<R: Real>(xs: &[R], ys: &[R]) -> R {
 pub fn matvec_const<R: Real>(mat: &[f64], n: usize, k: usize, v: &[R]) -> Vec<R> {
     debug_assert_eq!(mat.len(), n * k);
     debug_assert_eq!(v.len(), k);
-    (0..n).map(|i| dot_const(v, &mat[i * k..(i + 1) * k])).collect()
+    R::matvec_const(mat, n, k, v)
 }
 
 /// `log(sum(exp(xs)))` as a single node.
@@ -890,6 +977,27 @@ mod tests {
             },
             &[0.1, 0.2, -0.3],
         );
+    }
+
+    #[test]
+    fn fused_ops_match_unfused() {
+        let w = [0.5, -1.5, 2.0, 0.25, 3.0, -0.75];
+        check_grad(
+            |x| {
+                let mv = matvec_const(&w, 2, 3, &x[0..3]);
+                x[0].mul_add(1.5, x[1]) + x[1].fma(x[2], x[0]) + mv[0] * mv[1] + dot_const(&x[0..3], &w[3..6])
+            },
+            |x| {
+                let mv = matvec_const(&w, 2, 3, &x[0..3]);
+                x[0].mul_add(1.5, x[1]) + x[1].fma(x[2], x[0]) + mv[0] * mv[1] + dot_const(&x[0..3], &w[3..6])
+            },
+            &[0.3, -0.7, 1.1],
+        );
+        for &x in &[-40.0, -3.0, -0.1, 0.0, 0.5, 7.0, 40.0] {
+            let (sp, sg) = softplus_sigmoid_f64(x);
+            assert!((sp - softplus_f64(x)).abs() < 1e-14 * (1.0 + sp.abs()));
+            assert!((sg - sigmoid_f64(x)).abs() < 1e-15);
+        }
     }
 
     #[test]

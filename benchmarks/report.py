@@ -24,6 +24,9 @@ def load(name):
 
 def med(rows, key):
     vals = [r[key] for r in rows if key in r and r[key] is not None]
+    if key.startswith("ess"):
+        # Geyer's estimator can go negative on a stuck chain; treat as unusable
+        vals = [v for v in vals if v > 0]
     return statistics.median(vals) if vals else float("nan")
 
 
