@@ -35,7 +35,7 @@ def main():
     groups = defaultdict(list)
     for r in rows:
         groups[(r["model"], r["algo"], r["lib"])].append(r)
-    keys = sorted({(m, a) for (m, a, _) in groups}, key=lambda k: (["nuts", "hmc", "mh"].index(k[1]), k[0]))
+    keys = sorted({(m, a) for (m, a, _) in groups}, key=lambda k: (["nuts", "mams", "barker", "hmc", "mh", "aies", "ess"].index(k[1]), k[0]))
 
     try:
         cpu = subprocess.check_output(["sysctl", "-n", "machdep.cpu.brand_string"]).decode().strip()
@@ -47,14 +47,15 @@ def main():
     out.append("`time` is wall-clock for warmup + sampling, median over repeats. numpyro `time` includes XLA compilation of the")
     out.append("sampler for that model; `cached` is a second run reusing the compiled program. `ESS/s` uses the minimum effective")
     out.append("sample size over all parameters divided by the (uncached) wall time.\n")
-    out.append("| model | algo | warmup/samples | pyroxide time (s) | numpyro time (s) | numpyro cached (s) | speedup vs numpyro | speedup vs cached | pyroxide min ESS | numpyro min ESS | pyroxide ESS/s | numpyro ESS/s |")
+    out.append("| model | algo | warmup/samples (×walkers) | pyroxide time (s) | numpyro time (s) | numpyro cached (s) | speedup vs numpyro | speedup vs cached | pyroxide min ESS | numpyro min ESS | pyroxide ESS/s | numpyro ESS/s |")
     out.append("|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
     for (model, algo) in keys:
         px = groups.get((model, algo, "pyroxide"), [])
         npy = groups.get((model, algo, "numpyro"), [])
         if not px and not npy:
             continue
-        ws = f"{(px or npy)[0]['warmup']}/{(px or npy)[0]['samples']}"
+        r0 = (px or npy)[0]
+        ws = f"{r0['warmup']}/{r0['samples']}" + (f" ×{r0['chains']}" if r0.get("chains", 1) > 1 else "")
         t_px = med(px, "time_s")
         t_np = med(npy, "time_s")
         t_npc = med(npy, "time_s_cached")

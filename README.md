@@ -1,7 +1,7 @@
 # pyroxide
 
 Fast, decoupled probabilistic programming in Rust: write a generative model once,
-run it under NUTS, HMC, or Metropolis–Hastings.
+run it under NUTS, MAMS, HMC, Barker MH, ensemble samplers, or Metropolis–Hastings.
 
 pyroxide re-creates the core of [NumPyro](https://github.com/pyro-ppl/numpyro)
 without JAX: a Stan-style reverse-mode autodiff tape, distributions with
@@ -16,7 +16,10 @@ beyond `rand`, `rayon` and `rustfft`.
   public (GitHub Pages is not available on private repositories under the free
   plan).
 * **Design**: [`docs/DESIGN.md`](docs/DESIGN.md) — goals, the model-syntax
-  decision, and every layer explained.
+  decision, every layer explained, tensor/AD backend exploration, the SVI plan,
+  and SMC without coroutines.
+* **Parity**: [`docs/PARITY.md`](docs/PARITY.md) — feature-by-feature status
+  against NumPyro with priorities.
 * **Benchmarks**: [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md) — pyroxide vs
   NumPyro on the same models. On an M4 Max, single chain, float64, 1000 warmup +
   1000 samples: NUTS is 10–68× faster than NumPyro's compiled sampler on eight
@@ -86,7 +89,7 @@ let samples = MCMC::new(HmcKernel::nuts(banana), 1000, 2000).run(1);
 | `ad` | thread-local flat tape, `Real` trait for `f64` / `Var`, n-ary nodes with analytic partials |
 | `dist` | Normal, LogNormal, HalfNormal, Cauchy, HalfCauchy, StudentT, Uniform, Exponential, Gamma, InverseGamma, Beta, Pareto, Laplace, ImproperUniform, Bernoulli, Binomial, Poisson, Categorical, Dirichlet, MultivariateNormal, LKJCholesky, `Ordered<D>` |
 | `model` | `Model` / `Handler` traits, constraint transforms (positive, interval, simplex, ordered, correlation Cholesky), layout discovery, log-density / tracing / postprocessing handlers, `Predictive` |
-| `infer` | `Potential`, `HmcKernel` (NUTS + HMC), `MetropolisHastings`, warmup adaptation, `MCMC` driver with parallel chains, `Samples` |
+| `infer` | `Potential`; kernels `HmcKernel` (NUTS + HMC), `MAMS` (adjusted microcanonical), `BarkerMH`, `AIES` / `ESS` (ensemble), `MetropolisHastings`; warmup adaptation; `MCMC` driver with parallel chains; `Samples` |
 | `diagnostics` | ESS, R-hat, split R-hat, HPDI, autocorrelation, summary table |
 
 ## Tests

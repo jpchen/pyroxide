@@ -37,6 +37,53 @@ Fixed-length HMC shares NUTS's integrator and adaptation. With the default
 `2π` trajectory it is a poor sampler on many targets (a standard normal has
 period `2π`), so prefer NUTS unless you have a reason.
 
+### MAMS (Metropolis-adjusted microcanonical sampler)
+
+```rust
+let kernel = MAMS::new(potential).target_accept_prob(0.9);
+```
+
+The most recent of the "life after NUTS" samplers (Robnik, Cohn-Gordon &
+Seljak 2025). Momentum lives on the unit sphere and follows isokinetic Langevin
+dynamics integrated with a two-stage McLachlan scheme; each transition draws a
+fresh momentum, integrates for a Halton-jittered number of steps set by an
+adapted trajectory length, and Metropolis-corrects the exact energy change.
+It is exact like NUTS, has no tree to build, and on smooth targets typically
+gives more effective samples per gradient. Warmup tunes the step size by dual
+averaging in two phases and sets the trajectory length from posterior
+variances. Needs at least two dimensions. Optional `.preconditioning(true)`
+learns a diagonal metric.
+
+### Barker proposal MH
+
+```rust
+let kernel = BarkerMH::new(potential).dense_mass(true);
+```
+
+Gradient-based Metropolis–Hastings with a proposal skewed toward the gradient
+(Livingstone & Zanella 2022): each coordinate step keeps its sign with
+probability `sigmoid(z ∂ log π)`. Robust to step-size misspecification and
+heavy tails; competitive with HMC in low to moderate dimension, with one
+gradient per iteration. Adapts step size (toward 0.4 acceptance) and mass
+matrix like NUTS.
+
+### Ensemble samplers: AIES and ESS
+
+```rust
+let samples = MCMC::new(AIES::new(potential), 2000, 1000).num_chains(20).run(0);
+let samples = MCMC::new(ESS::new(potential), 2000, 1000).num_chains(20).run(0);
+```
+
+Gradient-free samplers that move a population of walkers, each half using the
+other as the proposal ensemble. `num_chains` is the number of walkers (even,
+at least `2 × dim` is recommended; the default is `max(4, 2 dim)`), and every
+walker is reported as a chain. AIES (Goodman & Weare / `emcee`) uses the
+differential-evolution move by default (`.stretch_move(2.0)` for the classic
+stretch move); ESS (Karamanis & Beutler / `zeus`) slice-samples along
+differential directions and tunes its scale `mu` during warmup. Both only
+evaluate the density, never its gradient — they work for black-box or
+non-differentiable targets.
+
 ### Metropolis–Hastings
 
 ```rust
@@ -100,8 +147,9 @@ samples.print_summary();
 
 Kernel diagnostics available through `extra`: `accept_prob`, `step_size`,
 `num_steps`, `diverging`, `energy`, `potential_energy`, `mean_accept_prob`
-(NUTS/HMC), or `accept_prob`, `step_size`, `potential_energy`,
-`mean_accept_prob` (MH).
+(NUTS/HMC); MAMS adds `energy_change` and `trajectory_length`; MH and Barker
+report `accept_prob`, `step_size`, `potential_energy`, `mean_accept_prob`; AIES
+reports acceptance and ESS its scale `mu` and expansion/contraction counts.
 
 ## Writing a kernel
 

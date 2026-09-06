@@ -33,7 +33,8 @@ pub mod prelude {
     pub use crate::ad::{Real, Var};
     pub use crate::dist::*;
     pub use crate::infer::{
-        FnPotential, HmcKernel, InitStrategy, MetropolisHastings, ModelPotential, Potential, Samples, MCMC,
+        BarkerMH, FnPotential, HmcKernel, InitStrategy, MetropolisHastings, ModelPotential, Potential,
+        Samples, AIES, ESS, MAMS, MCMC,
     };
     pub use crate::model::{Handler, Model, Predictive};
 }

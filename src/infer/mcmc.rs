@@ -38,6 +38,24 @@ pub trait Kernel: Sync {
 
     /// Write per-iteration diagnostics (same order as `stat_names`).
     fn stats(&self, state: &Self::State, out: &mut [f64]);
+
+    /// Ensemble kernels move a whole population of walkers per step; the MCMC
+    /// driver then reports each walker as a chain. Default: not an ensemble.
+    fn is_ensemble(&self) -> bool {
+        false
+    }
+
+    /// Create the state for an ensemble of walkers (only for ensemble kernels).
+    fn init_ensemble(&self, zs: Vec<Vec<f64>>, num_warmup: usize, rng: &mut ChainRng) -> Self::State {
+        assert_eq!(zs.len(), 1, "this kernel is not an ensemble sampler");
+        self.init(zs.into_iter().next().unwrap(), num_warmup, rng)
+    }
+
+    /// Position of walker `w` (ensemble kernels).
+    fn position_of(state: &Self::State, w: usize) -> &[f64] {
+        debug_assert_eq!(w, 0);
+        Self::position(state)
+    }
 }
 
 /// How to choose each chain's initial point (in unconstrained space).
@@ -334,10 +352,17 @@ impl<K: Kernel> MCMC<K> {
         unreachable!()
     }
 
-    fn run_chain(&self, chain: usize, mut rng: ChainRng) -> ChainOutput {
-        let z0 = self.initial_position(&mut rng);
-        let d = z0.len();
-        let mut state = self.kernel.init(z0, self.num_warmup, &mut rng);
+    /// Run one chain (or one ensemble of `walkers` walkers) and return one
+    /// output per walker.
+    fn run_chain(&self, chain: usize, mut rng: ChainRng, walkers: usize) -> Vec<ChainOutput> {
+        let zs: Vec<Vec<f64>> = (0..walkers).map(|_| self.initial_position(&mut rng)).collect();
+        let d = zs[0].len();
+        let mut state = if walkers == 1 {
+            self.kernel
+                .init(zs.into_iter().next().unwrap(), self.num_warmup, &mut rng)
+        } else {
+            self.kernel.init_ensemble(zs, self.num_warmup, &mut rng)
+        };
         let names = self.kernel.stat_names();
         let total = self.num_warmup + self.num_samples;
         let collected = if self.collect_warmup {
@@ -345,14 +370,16 @@ impl<K: Kernel> MCMC<K> {
         } else {
             self.num_samples
         };
-        let mut positions = Vec::with_capacity(collected * d);
+        let mut positions: Vec<Vec<f64>> = (0..walkers).map(|_| Vec::with_capacity(collected * d)).collect();
         let mut stats = vec![Vec::with_capacity(collected); names.len()];
         let mut buf = vec![0.0; names.len()];
         let start = std::time::Instant::now();
         for it in 0..total {
             self.kernel.step(&mut state, &mut rng);
             if self.collect_warmup || it >= self.num_warmup {
-                positions.extend_from_slice(K::position(&state));
+                for (w, pos) in positions.iter_mut().enumerate() {
+                    pos.extend_from_slice(K::position_of(&state, w));
+                }
                 self.kernel.stats(&state, &mut buf);
                 for (s, v) in stats.iter_mut().zip(&buf) {
                     s.push(*v);
@@ -383,16 +410,35 @@ impl<K: Kernel> MCMC<K> {
                 );
             }
         }
-        ChainOutput {
-            positions,
-            stats,
-            dim: d,
-        }
+        positions
+            .into_iter()
+            .map(|p| ChainOutput {
+                positions: p,
+                stats: stats.clone(),
+                dim: d,
+            })
+            .collect()
     }
 
     /// Run all chains and return postprocessed samples.
+    ///
+    /// For ensemble kernels (`Kernel::is_ensemble`), `num_chains` is the number
+    /// of walkers (rounded up to an even number; default `max(4, 2 * dim)` when
+    /// left at 1) and every walker is reported as a chain.
     pub fn run(&self, seed: u64) -> Samples {
         let master = ChainRng::seed_from_u64(seed);
+        if self.kernel.is_ensemble() {
+            let d = self.kernel.potential().dim();
+            let mut walkers = if self.num_chains > 1 {
+                self.num_chains
+            } else {
+                (2 * d).max(4)
+            };
+            if walkers % 2 == 1 {
+                walkers += 1;
+            }
+            return self.assemble(self.run_chain(0, master, walkers));
+        }
         let rngs: Vec<ChainRng> = (0..self.num_chains)
             .scan(master, |r, _| {
                 let mine = r.clone();
@@ -403,12 +449,12 @@ impl<K: Kernel> MCMC<K> {
         let outputs: Vec<ChainOutput> = if self.parallel && self.num_chains > 1 {
             rngs.into_par_iter()
                 .enumerate()
-                .map(|(c, rng)| self.run_chain(c, rng))
+                .flat_map(|(c, rng)| self.run_chain(c, rng, 1))
                 .collect()
         } else {
             rngs.into_iter()
                 .enumerate()
-                .map(|(c, rng)| self.run_chain(c, rng))
+                .flat_map(|(c, rng)| self.run_chain(c, rng, 1))
                 .collect()
         };
         self.assemble(outputs)

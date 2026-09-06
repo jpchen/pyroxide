@@ -23,8 +23,13 @@ from jax import random
 import numpyro
 import numpyro.distributions as dist
 from numpyro.diagnostics import effective_sample_size, split_gelman_rubin
-from numpyro.infer import HMC, MCMC, NUTS
+from numpyro.infer import AIES, ESS, HMC, MCMC, NUTS, BarkerMH
 from numpyro.infer.mcmc import MCMCKernel
+
+try:  # only on the numpyro checkout carrying the microcanonical contrib module
+    from numpyro.contrib.microcanonical import MAMS
+except Exception:  # pragma: no cover
+    MAMS = None
 
 here = os.path.dirname(os.path.abspath(__file__))
 
@@ -253,20 +258,41 @@ def make_mcmc(model, args):
         kernel = HMC(model)
     elif args.algo == "mh":
         kernel = MetropolisHastings(model)
+    elif args.algo == "barker":
+        kernel = BarkerMH(model)
+    elif args.algo == "aies":
+        kernel = AIES(model)
+    elif args.algo == "ess":
+        # numpyro's ESS permutes the walker array in place each iteration when
+        # randomize_split=True (its default), so per-chain series mix walkers
+        # and the reported n_eff is inflated. Keep walker identity for a fair
+        # comparison with pyroxide (which randomizes only the active/inactive split).
+        kernel = ESS(model, randomize_split=False)
+    elif args.algo == "mams":
+        if MAMS is None:
+            raise SystemExit("MAMS is not available in this numpyro installation")
+        kernel = MAMS(model)
     else:
         raise ValueError(args.algo)
+    ensemble = args.algo in ("aies", "ess")
     return MCMC(
         kernel,
         num_warmup=args.warmup,
         num_samples=args.samples,
         num_chains=args.chains,
-        chain_method="parallel" if args.chains > 1 else "sequential",
+        chain_method="vectorized" if ensemble else ("parallel" if args.chains > 1 else "sequential"),
         progress_bar=False,
     )
 
 
 def timed_run(mcmc, key):
-    fields = ("diverging", "num_steps", "mean_accept_prob") if not isinstance(mcmc.sampler, MetropolisHastings) else ("accept_prob", "mean_accept_prob")
+    k = mcmc.sampler
+    if isinstance(k, (HMC, NUTS)) or (MAMS is not None and isinstance(k, MAMS)):
+        fields = ("diverging", "num_steps", "mean_accept_prob")
+    elif isinstance(k, (AIES, ESS)):
+        fields = ()
+    else:
+        fields = ("accept_prob", "mean_accept_prob")
     t0 = time.perf_counter()
     mcmc.run(key, extra_fields=fields)
     # force materialization of samples and extra fields
@@ -316,8 +342,11 @@ def main():
         ess_min, ess_mean = min(ess), float(np.mean(ess))
         ndiv = int(np.sum(np.asarray(extra["diverging"]))) if "diverging" in extra else 0
         steps = int(np.sum(np.asarray(extra["num_steps"]))) if "num_steps" in extra else 0
-        map_ = np.asarray(extra["mean_accept_prob"])
-        mean_accept = float(np.mean(map_[:, -1]))
+        if "mean_accept_prob" in extra:
+            map_ = np.asarray(extra["mean_accept_prob"])
+            mean_accept = float(np.mean(map_[:, -1]))
+        else:
+            mean_accept = float("nan")
         print(json.dumps(dict(
             lib="numpyro" + ("_x32" if args.x32 else ""),
             model=args.model, algo=args.algo, warmup=args.warmup, samples=args.samples,

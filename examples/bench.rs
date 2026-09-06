@@ -238,6 +238,19 @@ fn run_kernel<P: Potential>(pot: P, args: &Args) -> (Samples, f64) {
         )
         .num_chains(args.chains)
         .run(args.seed),
+        "barker" => MCMC::new(BarkerMH::new(pot), args.warmup, args.samples)
+            .num_chains(args.chains)
+            .run(args.seed),
+        "mams" => MCMC::new(MAMS::new(pot), args.warmup, args.samples)
+            .num_chains(args.chains)
+            .run(args.seed),
+        // ensembles: `chains` is the number of walkers
+        "aies" => MCMC::new(AIES::new(pot), args.warmup, args.samples)
+            .num_chains(args.chains)
+            .run(args.seed),
+        "ess" => MCMC::new(ESS::new(pot), args.warmup, args.samples)
+            .num_chains(args.chains)
+            .run(args.seed),
         other => panic!("unknown algo {other}"),
     };
     (samples, start.elapsed().as_secs_f64())

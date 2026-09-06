@@ -389,6 +389,27 @@ re-converge (we measured the frozen step landing 2× too large; see the `git
 log`). MH uses `Potential::value` only, so models are evaluated with `f64` and
 the partial-derivative code compiles away (`Real::DIFFERENTIABLE == false`).
 
+**More kernels (round three).** All follow the same `Kernel` contract and
+were ported from numpyro with their tests:
+
+* `BarkerMH` — the Barker proposal (Livingstone & Zanella 2022): one gradient
+  per step, sign-flipped Gaussian increments with `P(keep) = σ(z ∂ log π)`,
+  and the skew-symmetric acceptance correction. Uses the HMC warmup adapter
+  with target acceptance 0.4.
+* `AIES` / `ESS` — ensemble samplers (`emcee` / `zeus`). These required one
+  extension of the `Kernel` trait: `is_ensemble`, `init_ensemble` and
+  `position_of(state, walker)`, so a state can hold a whole population and
+  the driver reports each walker as a chain. Both use only `Potential::value`.
+* `MAMS` — Metropolis-adjusted microcanonical sampling (Robnik et al. 2025),
+  ported from the `numpyro.contrib.microcanonical` branch (itself from
+  BlackJAX). Isokinetic dynamics with the closed-form ESH momentum rotation,
+  McLachlan two-stage splitting, Halton-jittered trajectory length, two-phase
+  dual averaging with the trajectory length set from warmup variances.
+  This is the current "state of the art" contender to NUTS: exact, no tree
+  building, and often more effective samples per gradient. The integrator is
+  unit-tested for energy conservation and sphere constraint; the kernel passes
+  the same posterior tests as NUTS.
+
 ### 7.3 Driver, RNG, initialization
 
 `MCMC::new(kernel, num_warmup, num_samples).num_chains(4).run(seed)`:
@@ -484,6 +505,16 @@ libraries take ~80 000 leapfrog steps during HMC warmup on that model (the
 fixed-trajectory-length pathology when the early step size is tiny — the reason
 NUTS exists). The dual-averaging, windowing and integrator arithmetic are
 therefore bit-for-bit the same algorithm; remaining differences are RNG streams.
+
+One artifact to know about when reading numpyro's ensemble numbers: its `ESS`
+kernel permutes the walker array in place every iteration when
+`randomize_split=True` (the default), so "chain k" is a different walker at
+every step. That destroys the per-chain autocorrelation the ESS estimator
+measures — on a 10-d standard normal numpyro reports lag-1 autocorrelation 0.08
+for a sampler that moves along one direction per step (the exact value is
+`1 - 1/d ≈ 0.9`, which pyroxide reproduces). The benchmark therefore runs
+numpyro's `ESS` with `randomize_split=False`; pyroxide randomizes only the
+active/inactive split and keeps walker identity.
 
 ### 10.2 What the numbers say
 
@@ -600,3 +631,268 @@ The output of `print_summary()` is the NumPyro table:
     …
 Number of divergences: 0
 ```
+
+---
+
+## 12. Tensors, autodiff backends, and deep learning
+
+**What pyroxide uses today.** There is no tensor library and no third-party
+autodiff. Everything is `f64` slices and the scalar tape in `src/ad.rs`:
+`Var` is a value plus a `u32` index, arithmetic on `Var` records a node,
+distributions record one node per site with hand-derived partials, and
+`gradient_into` runs one reverse sweep. It is "vectorized" only in the sense
+that a whole plate is one node; the arithmetic inside a plate is a scalar loop
+that LLVM auto-vectorizes where it can (the fused helpers `matvec_const`,
+`mul_add_vec` exist so that loop is tight). We measured this against XLA in
+§10: faster on everything except very large plates, where XLA's fused,
+SIMD-vectorized likelihood evaluates a gradient in ~12 µs against our ~40 µs.
+
+**Why not build on a tensor library from the start?** For the models MCMC is
+used on — tens to a few thousand parameters, likelihoods that are sums over
+data — a tensor library's strengths (large dense matmuls, GPU dispatch,
+broadcasting) are irrelevant and its costs (per-op dispatch of ~1–10 µs,
+allocation per intermediate, dynamic shapes) dominate. A NUTS leaf on eight
+schools costs pyroxide ~2 µs total; a single `candle` or `tch` op costs more
+than that. Stan reached the same conclusion two decades ago. The scalar tape is
+the right tool for the core.
+
+**How the Rust options compare** (for the case where you *do* want tensors):
+
+| library | what it is | autodiff | GPU | fit for pyroxide |
+|---|---|---|---|---|
+| `candle` (HF) | PyTorch-like tensors, minimal, fast CPU/CUDA/Metal kernels; runs LLMs | yes, dynamic tape over tensor ops | CUDA, Metal | best candidate for a *tensor backend*: mature, actively maintained, `Tensor::backward()` gives gradients w.r.t. `Var` leaves |
+| `burn` | framework with pluggable backends (ndarray, wgpu, candle, tch, CUDA) | yes, via `Autodiff<B>` backend decorator | via backends | heavier abstraction; good if portability to wgpu matters |
+| `tch` | bindings to libtorch | yes | CUDA/MPS | brings the whole PyTorch runtime; pragmatic if you already have torch models |
+| `dfdx` | shape-typed tensors, autodiff | yes | CUDA | compile-time shapes make dynamic plates awkward |
+| `ndarray` + `faer` / `nalgebra` | arrays and linear algebra, no autodiff | no | no | useful for dense mass matrices and Laplace approximations, not for gradients |
+| `enzyme` (LLVM plugin, `rustc` `-Zautodiff`) | source-level AD of Rust code | yes | n/a | nightly-only today; would make hand-written partials unnecessary |
+
+**The integration point is `Potential`, not `Real`.** Inference needs one
+thing from a model: `value_and_grad(z, grad)`. That contract is satisfied by
+any system that can differentiate a scalar with respect to a flat vector:
+
+```rust
+struct CandlePotential { model: MyCandleNet, data: Tensor, dim: usize }
+
+impl Potential for CandlePotential {
+    fn dim(&self) -> usize { self.dim }
+    fn value(&self, z: &[f64]) -> f64 { self.log_joint(Tensor::new(z, &Device::Cpu)?)... }
+    fn value_and_grad(&self, z: &[f64], grad: &mut [f64]) -> f64 {
+        let zt = Var::from_slice(z, (self.dim,), &Device::Cpu)?;      // candle Var = leaf
+        let u = -self.log_joint(zt.as_tensor());                       // candle graph
+        let grads = u.backward()?;                                     // candle reverse mode
+        grad.copy_from_slice(&grads.get(&zt)?.to_vec1::<f64>()?);
+        u.to_scalar::<f64>()?
+    }
+}
+let samples = MCMC::new(HmcKernel::nuts(CandlePotential { .. }), 1000, 1000).run(0);
+```
+
+Nothing in `infer/` changes: NUTS, MAMS, Barker and the ensemble samplers
+run unmodified on a candle-backed density, on a GPU if the tensors live there.
+A `pyroxide-candle` companion crate would provide (a) that adapter, (b)
+tensor-valued distributions (`Normal<Tensor>` etc.) implementing a
+`TensorDistribution` trait with `log_prob(&Tensor) -> Tensor`, and (c) a
+`Handler` whose scalar type is a candle `Tensor` of shape `()` — the `Real`
+trait as written is `Copy`, so a tensor handle would need a small wrapper, or
+the handler layer generalizes `R` to `Clone`. That is a contained change.
+
+**"Sampling from LLMs."** Two different things hide behind that phrase, and
+they need different machinery:
+
+1. *Bayesian inference over network weights* (Bayesian neural nets, last-layer
+   Bayes, LoRA-adapter posteriors). The parameter vector is `10^5`–`10^7`
+   dimensional and the likelihood is a forward pass over a minibatch. HMC is
+   possible only with stochastic gradients (SGHMC, SGLD) or subsampled
+   energy-conserving variants (HMCECS); exact NUTS is not. This is the
+   candle-`Potential` route plus a stochastic-gradient kernel — a natural
+   follow-on once minibatched SVI (§13) exists, since both share the
+   subsampled-likelihood plumbing. Last-layer or adapter posteriors with a few
+   thousand parameters are very much in range of MAMS/NUTS today via the
+   adapter above.
+
+2. *Sampling sequences from a distribution defined through an LLM* — e.g.
+   `p(x) ∝ p_LM(x) · exp(r(x))` for a reward or constraint, or conditioning a
+   generation on a downstream classifier. Here the state is discrete (tokens),
+   there are no gradients, and the log density is one forward pass per
+   evaluation (expensive). The relevant machinery is Metropolis–Hastings with
+   proposals from the LM itself (independence or block-resampling proposals),
+   sequential Monte Carlo / twisted SMC over the token prefix, and
+   importance weighting — all *gradient-free* kernels over an opaque
+   `Potential::value`. pyroxide's `MetropolisHastings`, `AIES` and `ESS`
+   already only need `value`; a `TokenPotential` wrapping a candle LLM plus a
+   proposal kernel that resamples a span of tokens from the LM is the missing
+   piece, and SMC (§14) is the scalable version.
+
+Neither requires changing the scalar tape; both are additive crates.
+
+---
+
+## 13. Variational inference: plan
+
+SVI reuses everything above except the kernel. The pieces, in the order they
+will land:
+
+### 13.1 Parameters and guides
+
+A *guide* is a `Model` that may also declare learnable parameters:
+
+```rust
+pub trait Handler<R: Real> {
+    // existing: sample_vec / sample / observe / factor / deterministic
+    /// Declare a learnable parameter (returns its current value). Unconstrained
+    /// by default; `support` maps it through the constraining transform.
+    fn param(&mut self, name: &str, init: &[f64], support: Support) -> Vec<R>;
+    /// Scale factor applied to log-density terms declared until `pop_scale`
+    /// (minibatch upweighting). Nested scales multiply.
+    fn push_scale(&mut self, scale: f64);
+    fn pop_scale(&mut self);
+}
+```
+
+`param` on the existing handlers: `LogDensity` and `Tracer` return the stored
+value (guides are traced like models); `LayoutDiscovery` records the parameter
+layout in a `ParamStore` (name → offset, length, support), analogous to
+`SiteLayout` for latents.
+
+Autoguides are plain `Model` implementations generated from a `SiteLayout`:
+
+* `AutoDelta` — one `param` per latent site (MAP).
+* `AutoDiagonalNormal` — `loc` and `scale` params per latent, `z = loc +
+  scale · ε`, mapped through the site's constraining transform, with
+  `log q` = Normal log density minus the log-Jacobian.
+* `AutoMultivariateNormal` — one `loc` vector and a `scale_tril`
+  (`LowerCholesky` support) over the flat unconstrained vector.
+* `AutoLowRankMultivariateNormal`, `AutoLaplaceApproximation` afterwards.
+
+### 13.2 The ELBO
+
+`Trace_ELBO` with one reparameterized sample:
+
+1. Run the guide under a `GuideTrace<Var>` handler: parameters are `Var`
+   leaves (read from a flat parameter vector), noise `ε` is drawn with the RNG,
+   each `sample` returns a *differentiable* `z` (the reparameterization
+   trick: `z = loc + scale·ε` is a function of `Var`s), and `log q(z)` is
+   accumulated.
+2. Run the model under a `Replay<Var>` handler that returns the guide's `z` for
+   each latent site and accumulates `log p(x, z)` (respecting `push_scale`).
+3. `elbo = log p − log q`; one backward sweep gives `∂elbo/∂params`.
+
+This is exactly numpyro's `Trace_ELBO` with `num_particles = 1`; averaging over
+particles is a loop. `TraceMeanField_ELBO` swaps the sampled `log q − log p_z`
+for analytic KL terms where both sides are in the same family (`kl_divergence`
+table on distribution pairs). Non-reparameterizable guides (discrete latents)
+are out of scope, as in NumPyro's default ELBO.
+
+### 13.3 Optimizers and the loop
+
+`Adam`, `ClippedAdam`, `SGD`, `RMSProp` as small structs over flat `Vec<f64>`
+with a `step(&mut params, &grad)` method (~30 lines each; Adam with bias
+correction is the default, lr `1e-3`).
+
+```rust
+let guide = AutoDiagonalNormal::new(&model);
+let mut svi = SVI::new(&model, &guide, Adam::new(0.01), TraceELBO::new(1));
+let state = svi.run(seed, 5000);          // prints loss periodically
+let posterior = guide.sample_posterior(&state.params, 1000, seed);  // Samples
+let loss = svi.evaluate(&state, 100);      // Monte Carlo ELBO estimate
+```
+
+`svi.run` supports a callback per step for logging / early stopping, and
+`svi.step(&mut state)` for custom loops.
+
+### 13.4 Minibatching
+
+NumPyro's `plate(..., subsample_size=n)` does two things: it draws a random
+subset of indices and it scales the log density of everything inside by
+`N / n`. pyroxide makes both explicit and both trivial to test:
+
+```rust
+struct Regression { x: Vec<f64>, y: Vec<f64>, batch: Vec<usize> }   // batch set per step
+
+impl Model for Regression {
+    fn run<R: Real, H: Handler<R>>(&self, h: &mut H) {
+        let w = h.sample("w", Normal::new(0.0, 1.0));
+        let b = h.sample("b", Normal::new(0.0, 1.0));
+        let scale = self.y.len() as f64 / self.batch.len() as f64;
+        h.push_scale(scale);
+        let xb: Vec<f64> = self.batch.iter().map(|&i| self.x[i]).collect();
+        let yb: Vec<f64> = self.batch.iter().map(|&i| self.y[i]).collect();
+        let mean: Vec<R> = xb.iter().map(|xi| w * *xi + b).collect();
+        h.observe("y", Normal::new(&mean, 0.5), &yb);
+        h.pop_scale();
+    }
+}
+```
+
+`SVI::run_minibatch(seed, steps, |step, rng| model.set_batch(...))` (or the
+user resampling `batch` in the callback) is the loop; a `Subsample::draw(rng,
+N, n)` helper provides the index sampling. Because the model owns its data and
+`run` takes `&self`, the batch is stored behind a `RefCell`/`Cell` or the model
+is rebuilt per step — both are cheap. Since minibatch gradients are unbiased
+for the full ELBO gradient, the same `Trace_ELBO` code applies unchanged; the
+scaled `observe` is the only new handler semantics, and `LogDensity` honours it
+too, so MCMC kernels get **stochastic-gradient variants for free** (SGLD /
+SGHMC as `Kernel`s over a `Potential` whose `value_and_grad` is noisy).
+
+### 13.5 Tests
+
+Ported from `test_svi.py` / `test_autoguide.py`: Beta–Bernoulli with
+`AutoDiagonalNormal` recovers the analytic posterior mean; logistic regression
+with `AutoMultivariateNormal` matches NUTS moments; `AutoDelta` on a Gaussian
+recovers the MAP exactly; minibatch ELBO gradient is an unbiased estimate of
+the full-data gradient (compare averages over many batches to the exact
+gradient); Adam on a quadratic converges. Loss curves must decrease
+monotonically on the smoothed average.
+
+---
+
+## 14. Sequential Monte Carlo without coroutines
+
+Pyro's `SMCFilter` relies on Python generators: the model is a coroutine that
+yields at each time step so the filter can reweight and resample between
+steps. Rust has no stable coroutines, but SMC does not need them — the
+coroutine is only a convenient way to *pause a program at a site boundary*. Two
+equivalent formulations fit pyroxide directly.
+
+**1. Explicit state-space interface (recommended first).** A particle filter
+needs three things from the user: an initial distribution, a transition, and
+an observation likelihood. Make that a trait:
+
+```rust
+pub trait StateSpaceModel {
+    type Obs;
+    fn init(&self, h: &mut impl Handler<f64>) -> Vec<f64>;                   // sample x_0
+    fn transition(&self, t: usize, x: &[f64], h: &mut impl Handler<f64>) -> Vec<f64>;   // sample x_t | x_{t-1}
+    fn observe(&self, t: usize, x: &[f64], y: &Self::Obs) -> f64;             // log p(y_t | x_t)
+}
+```
+
+The bootstrap filter is then a plain loop over `t`: propagate every particle
+with `transition` under a `Tracer`, weight by `observe`, resample
+(systematic / multinomial / stratified) when the ESS drops below a threshold,
+and record the log normalizing-constant increments. Guided proposals are one
+more trait method with a default. This is how every Rust or C++ SMC library
+(e.g. `SMCTC`, `libbi`) is written, and it maps to pyroxide's handlers with no
+new language features. Particles are rows of an `Array`, so diagnostics and
+`Samples` reuse applies.
+
+**2. Handler-driven SMC for arbitrary generative programs** (Pyro's
+generality). The trick is that we do not need to *suspend* the program; we
+can *re-run it under a handler that replays the past*. An `SmcHandler` runs
+the whole model once per particle per time step, replays the already-decided
+latent values for sites with time index `< t` (from the particle's trace),
+samples sites at time `t`, and stops accumulating log-weight at the first
+`observe` of time `t+1`. Cost is `O(T)` re-execution per step (`O(T²)`
+total), which is acceptable for the `T ≲ 10³` regime where general-purpose
+SMC is used and can be avoided entirely with formulation 1. Site naming
+carries the time index (`format!("x_{t}")`), as in Pyro. This is also the
+mechanism for *twisted SMC over token sequences* (§12): sites are tokens,
+the "observe" is the twist/reward.
+
+**Where SMC sits in the architecture.** Neither formulation touches `ad`,
+`dist` or `infer::Kernel`. `SmcFilter` is a new driver alongside `MCMC` that
+consumes handlers; particle MCMC (PMMH) then falls out by using the filter's
+log-normalizing-constant estimate as a `Potential::value` inside
+`MetropolisHastings` — another demonstration that `Potential` is the right
+seam.

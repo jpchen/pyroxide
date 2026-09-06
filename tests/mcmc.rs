@@ -765,3 +765,175 @@ fn ordered_mixture_means() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// New kernels: BarkerMH, AIES, ESS, MAMS (ports of the corresponding numpyro
+// parametrizations of test_unnormalized_normal / test_logistic_regression /
+// test_beta_bernoulli).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn unnormalized_normal_barker() {
+    for dense in [false, true] {
+        let kernel = BarkerMH::new(unnormalized_normal_potential()).dense_mass(dense);
+        let samples = MCMC::new(kernel, 1000, 8000).run(0);
+        check_unnormalized_normal(&samples, 0.07);
+        let accept = samples.extra("mean_accept_prob");
+        let last = accept.draw(0, accept.draws - 1)[0];
+        assert!(last > 0.25 && last < 0.6, "mean accept prob {last}");
+    }
+}
+
+#[test]
+fn unnormalized_normal_ensemble() {
+    // AIES / ESS: 10 walkers, each reported as a chain
+    let samples = MCMC::new(AIES::new(unnormalized_normal_potential()), 1000, 8000)
+        .num_chains(10)
+        .run(0);
+    assert_eq!(samples.num_chains, 10);
+    check_unnormalized_normal(&samples, 0.07);
+    let samples = MCMC::new(ESS::new(unnormalized_normal_potential()), 1000, 8000)
+        .num_chains(10)
+        .run(0);
+    check_unnormalized_normal(&samples, 0.07);
+    // stretch move variant
+    let samples = MCMC::new(
+        AIES::new(unnormalized_normal_potential()).stretch_move(2.0),
+        1000,
+        8000,
+    )
+    .num_chains(10)
+    .run(0);
+    check_unnormalized_normal(&samples, 0.07);
+}
+
+#[test]
+fn correlated_mvn_mams() {
+    let d = 5;
+    let mut rng = Xoshiro256PlusPlus::seed_from_u64(0);
+    let mut a = vec![0.0; d * d];
+    for i in 0..d {
+        for j in 0..=i {
+            let anti = if i + j == d - 1 { 0.5 } else { 0.0 };
+            let e: f64 = rand::Rng::sample(&mut rng, rand_distr::StandardNormal);
+            a[i * d + j] = anti + 0.1 * e.exp();
+        }
+    }
+    let mut cov = vec![0.0; d * d];
+    for i in 0..d {
+        for j in 0..d {
+            cov[i * d + j] = (0..d).map(|k| a[i * d + k] * a[j * d + k]).sum();
+        }
+    }
+    let prec = pyroxide::linalg::spd_inverse(&cov, d).unwrap();
+    let pot = FnPotential::new(d, move |z: &[Var]| {
+        let mut q = Var::constant(0.0);
+        for i in 0..d {
+            for j in 0..d {
+                q += z[i] * z[j] * prec[i * d + j];
+            }
+        }
+        q * 0.5
+    });
+    let samples = MCMC::new(MAMS::new(pot), 2000, 8000)
+        .init_strategy(InitStrategy::Unconstrained(vec![0.0; d]))
+        .run(0);
+    let z = samples.get("z");
+    for m in z.mean() {
+        assert_close(m, 0.0, 0.1, "mean");
+    }
+    let est = z.covariance();
+    let err: f64 = est.iter().zip(&cov).map(|(a, b)| (a - b).abs()).sum::<f64>() / (d * d) as f64;
+    assert!(err < 0.03, "mean abs covariance error {err}");
+    let accept = samples.extra("mean_accept_prob");
+    let last = accept.draw(0, accept.draws - 1)[0];
+    assert!(last > 0.7, "MAMS mean accept prob {last}");
+    assert_eq!(samples.num_divergences(), 0);
+}
+
+#[test]
+fn logistic_regression_new_kernels() {
+    let model = logistic_data(3000, 3);
+    // Barker
+    let s = MCMC::new(BarkerMH::new(ModelPotential::new(&model)), 2000, 12000).run(0);
+    for (i, m) in s.get("coefs").mean().iter().enumerate() {
+        assert_close(*m, (i + 1) as f64, 0.4, &format!("barker coef {i}"));
+    }
+    // MAMS
+    let s = MCMC::new(MAMS::new(ModelPotential::new(&model)), 1000, 8000).run(0);
+    for (i, m) in s.get("coefs").mean().iter().enumerate() {
+        assert_close(*m, (i + 1) as f64, 0.4, &format!("mams coef {i}"));
+    }
+    // ensembles: numpyro uses 16 (AIES) / 10 (ESS) walkers, 10k warmup, 8k draws each
+    let s = MCMC::new(AIES::new(ModelPotential::new(&model)), 10_000, 8000)
+        .num_chains(16)
+        .run(0);
+    for (i, m) in s.get("coefs").mean().iter().enumerate() {
+        assert_close(*m, (i + 1) as f64, 0.4, &format!("aies coef {i}"));
+    }
+    let s = MCMC::new(ESS::new(ModelPotential::new(&model)), 10_000, 8000)
+        .num_chains(10)
+        .run(0);
+    for (i, m) in s.get("coefs").mean().iter().enumerate() {
+        assert_close(*m, (i + 1) as f64, 0.4, &format!("ess coef {i}"));
+    }
+}
+
+#[test]
+fn beta_bernoulli_new_kernels() {
+    let model = beta_bernoulli_data();
+    let check = |samples: &Samples, what: &str| {
+        let m = samples.get("p_latent").mean();
+        assert_close(m[0], 0.9, 0.05, &format!("{what} p0"));
+        assert_close(m[1], 0.1, 0.05, &format!("{what} p1"));
+    };
+    check(
+        &MCMC::new(BarkerMH::new(ModelPotential::new(&model)), 2000, 12000).run(2),
+        "barker",
+    );
+    check(
+        &MCMC::new(MAMS::new(ModelPotential::new(&model)), 500, 20000).run(2),
+        "mams",
+    );
+    check(
+        &MCMC::new(AIES::new(ModelPotential::new(&model)), 500, 20000)
+            .num_chains(10)
+            .run(2),
+        "aies",
+    );
+    check(
+        &MCMC::new(ESS::new(ModelPotential::new(&model)), 500, 20000)
+            .num_chains(10)
+            .run(2),
+        "ess",
+    );
+}
+
+#[test]
+fn eight_schools_mams_matches_nuts() {
+    let model = eight_schools();
+    let nuts = MCMC::new(HmcKernel::nuts(ModelPotential::new(&model)), 1000, 4000)
+        .num_chains(2)
+        .run(0);
+    let mams = MCMC::new(MAMS::new(ModelPotential::new(&model)), 2000, 4000)
+        .num_chains(2)
+        .run(0);
+    assert_close(
+        mams.get("mu").scalar_mean(),
+        nuts.get("mu").scalar_mean(),
+        0.5,
+        "mu",
+    );
+    assert_close(
+        mams.get("tau").scalar_mean(),
+        nuts.get("tau").scalar_mean(),
+        0.7,
+        "tau",
+    );
+    for s in mams.summary(0.9) {
+        for e in s.elements {
+            assert!(e.r_hat < 1.05, "{}: r_hat {}", s.name, e.r_hat);
+        }
+    }
+    assert!(mams.extra("num_steps").data().iter().all(|&n| n >= 1.0));
+}
