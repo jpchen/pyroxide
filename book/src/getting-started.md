@@ -51,6 +51,15 @@ fn main() {
 
     samples.print_summary();
     println!("P(heads) ≈ {:.3}", samples.get("p").scalar_mean());
+
+    // Posterior predictive: replicate the data set for each posterior draw.
+    let pred = Predictive::new(&model).posterior(&samples).run(1);
+    let heads_rep = pred.get("flips");
+    let mean_heads: f64 = (0..heads_rep.draws)
+        .map(|d| heads_rep.draw(0, d).iter().sum::<f64>())
+        .sum::<f64>()
+        / heads_rep.draws as f64;
+    println!("observed heads: 6, posterior predictive mean heads: {mean_heads:.2}");
 }
 ```
 
@@ -59,11 +68,17 @@ Running it prints a table with the posterior mean, standard deviation, median,
 
 ```
                 mean       std    median      5.0%     95.0%     n_eff     r_hat
-         p      0.70      0.14      0.71      0.48      0.92   1531.70      1.00
-      odds      3.08      3.53      2.45      0.51      6.71   1349.85      1.00
+         p      0.70      0.14      0.72      0.49      0.93   1170.20      1.00
+      odds      3.63      4.04      2.53      0.39      7.12   1197.08      1.00
 
 Number of divergences: 0
+P(heads) ≈ 0.702
+observed heads: 6, posterior predictive mean heads: 5.54
 ```
+
+(The full program, including the posterior predictive check at the end, is
+`examples/coin.rs`; `examples/eight_schools.rs` shows the same model under
+NUTS and Metropolis–Hastings.)
 
 ## What just happened
 

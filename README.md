@@ -20,7 +20,7 @@ beyond `rand`, `rayon` and `rustfft`.
 * **Benchmarks**: [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md) — pyroxide vs
   NumPyro on the same models. On an M4 Max, single chain, float64, 1000 warmup +
   1000 samples: NUTS is 10–68× faster than NumPyro's compiled sampler on eight
-  schools, Neal's funnel, baseball and a 100-d Gaussian (same ESS), 1.5× faster
+  schools, Neal's funnel, baseball and a 100-d Gaussian (same ESS), 1.5–1.9× faster
   on logistic regression (1000 rows) and a 2000-row hierarchical regression;
   Metropolis–Hastings is 2–40× faster. The warmup adaptation is a numerically
   exact port (identical step-size trajectories to five digits).

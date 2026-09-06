@@ -501,8 +501,9 @@ summary:
   SIMD; pyroxide evaluates it in a scalar loop with one tape node per row of the
   linear predictor. Fusing `a + b·x` into one node and hoisting `log σ` out of
   the plate loop (first benchmark round → second, both kept under
-  `benchmarks/results/`) moved NUTS on these two models from parity to 1.5×
-  faster than numpyro. Fixed-length HMC on the hierarchical regression is the
+  `benchmarks/results/`) moved NUTS on these two models from parity to 1.5–1.9×
+  faster than numpyro (the third round's fused `mul_add_vec` linear predictor
+  took the hierarchical regression from 1.5× to 1.9×). Fixed-length HMC on the hierarchical regression is the
   one row where numpyro wins (≈5×): both libraries spend ~80 000 leapfrog steps
   in warmup there, so the comparison is purely per-gradient cost — about 40 µs
   in pyroxide's scalar loop against ~12 µs for XLA's SIMD-vectorized likelihood.
