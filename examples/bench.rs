@@ -105,13 +105,10 @@ impl Model for HierRegression {
         let a = h.sample_vec("a", Normal::new(mu_a, sigma_a).expand(self.groups));
         let b = h.sample_vec("b", Normal::new(mu_b, sigma_b).expand(self.groups));
         let sigma = h.sample("sigma", HalfNormal::new(1.0));
-        let mut mean = Vec::with_capacity(self.x.len());
-        for g in 0..self.groups {
-            for i in 0..self.n_per {
-                let idx = g * self.n_per + i;
-                mean.push(b[g].mul_add(self.x[idx], a[g]));
-            }
-        }
+        // gather group coefficients per observation (Var is Copy: no tape nodes)
+        let coef: Vec<R> = (0..self.x.len()).map(|i| b[i / self.n_per]).collect();
+        let add: Vec<R> = (0..self.x.len()).map(|i| a[i / self.n_per]).collect();
+        let mean = pyroxide::ad::mul_add_vec(&coef, &self.x, &add);
         h.observe("y", Normal::new(&mean, sigma), &self.y);
     }
 }

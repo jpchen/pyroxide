@@ -61,6 +61,11 @@ pub enum Support {
     NonNegativeInteger,
     /// `{0, ..., k-1}` (discrete).
     IntegerInterval(i64, i64),
+    /// Strictly increasing vectors (event dimension `k`).
+    OrderedVector,
+    /// Lower Cholesky factors of correlation matrices (event is a row-major
+    /// `k x k` matrix with `event_len = k * k`).
+    CorrCholesky,
 }
 
 impl Support {
@@ -71,6 +76,60 @@ impl Support {
             self,
             Support::Boolean | Support::NonNegativeInteger | Support::IntegerInterval(_, _)
         )
+    }
+}
+
+/// Restricts a distribution to strictly increasing event vectors.
+///
+/// The density is the base density on the ordered region (the `1/k!`
+/// normalizer is dropped, as in Stan's `ordered` type); sampling sorts a base
+/// draw. Use it to break label switching in mixtures:
+///
+/// ```
+/// use pyroxide::dist::{Normal, Ordered, Distribution, Support};
+/// let d = Ordered::new(Normal::<f64>::new(0.0, 5.0).expand(3), 3);
+/// assert_eq!(d.support(), Support::OrderedVector);
+/// assert_eq!(d.event_len(), 3);
+/// ```
+#[derive(Clone, Copy, Debug)]
+pub struct Ordered<D> {
+    pub base: D,
+    k: usize,
+}
+
+impl<D> Ordered<D> {
+    /// `k` is the event length (the base distribution's `len` must be a multiple).
+    pub fn new(base: D, k: usize) -> Self {
+        Ordered { base, k }
+    }
+}
+
+impl<R: Real, D: Distribution<R>> Distribution<R> for Ordered<D> {
+    fn len(&self) -> usize {
+        self.base.len()
+    }
+    fn event_len(&self) -> usize {
+        self.k
+    }
+    fn support(&self) -> Support {
+        Support::OrderedVector
+    }
+    fn log_prob_value(&self, x: Value<'_, R>) -> R {
+        let n = x.len();
+        for row in 0..n / self.k {
+            for i in 1..self.k {
+                if x.get(row * self.k + i) <= x.get(row * self.k + i - 1) {
+                    return R::constant(f64::NEG_INFINITY);
+                }
+            }
+        }
+        self.base.log_prob_value(x)
+    }
+    fn sample(&self, rng: &mut dyn RngCore, out: &mut [f64]) {
+        self.base.sample(rng, out);
+        for row in out.chunks_mut(self.k) {
+            row.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        }
     }
 }
 

@@ -35,5 +35,5 @@ pub mod prelude {
     pub use crate::infer::{
         FnPotential, HmcKernel, InitStrategy, MetropolisHastings, ModelPotential, Potential, Samples, MCMC,
     };
-    pub use crate::model::{Handler, Model};
+    pub use crate::model::{Handler, Model, Predictive};
 }

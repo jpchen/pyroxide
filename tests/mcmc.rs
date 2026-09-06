@@ -652,3 +652,116 @@ fn init_to_value_starts_there() {
     assert_close(samples.get("mu").scalar_mean(), 3.0, 1e-6, "mu");
     assert_close(samples.get("tau").scalar_mean(), 2.0, 1e-6, "tau");
 }
+
+// ---------------------------------------------------------------------------
+// LKJ correlation prior + MultivariateNormal likelihood (numpyro's LKJCholesky
+// docstring model): recover a known correlation matrix.
+// ---------------------------------------------------------------------------
+
+struct CorrelatedNormals {
+    y: Vec<f64>, // n x d row-major
+    n: usize,
+    d: usize,
+}
+
+impl Model for CorrelatedNormals {
+    fn run<R: Real, H: Handler<R>>(&self, h: &mut H) {
+        let d = self.d;
+        let sigma = h.sample_vec("sigma", HalfCauchy::new(1.0).expand(d));
+        let l_omega = h.sample_vec("L_omega", LKJCholesky::new(d, 1.0));
+        // L_Omega = diag(sigma) @ L_omega
+        let l_cov: Vec<R> = (0..d * d).map(|idx| sigma[idx / d] * l_omega[idx]).collect();
+        // record the correlation rho_21 = L_omega[1,0]
+        h.deterministic("rho", &[l_omega[d]]);
+        h.observe(
+            "obs",
+            MultivariateNormal::new(&vec![0.0; d], &l_cov).expand(self.n),
+            &self.y,
+        );
+    }
+}
+
+#[test]
+fn lkj_correlation_recovery() {
+    let (n, d) = (500, 2);
+    let true_rho = 0.6;
+    let true_sigma = [1.0, 2.0];
+    let cov = [
+        true_sigma[0] * true_sigma[0],
+        true_rho * true_sigma[0] * true_sigma[1],
+        true_rho * true_sigma[0] * true_sigma[1],
+        true_sigma[1] * true_sigma[1],
+    ];
+    let mut rng = Xoshiro256PlusPlus::seed_from_u64(3);
+    let gen = MultivariateNormal::<f64>::from_covariance(&[0.0, 0.0], &cov).expand(n);
+    let y = gen.sample_vec(&mut rng);
+    let model = CorrelatedNormals { y, n, d };
+    let samples = MCMC::new(HmcKernel::nuts(ModelPotential::new(&model)), 1000, 2000).run(0);
+    let rho = samples.get("rho").scalar_mean();
+    assert_close(rho, true_rho, 0.08, "rho");
+    let sigma = samples.get("sigma").mean();
+    assert_rel(sigma[0], 1.0, 0.1, "sigma0");
+    assert_rel(sigma[1], 2.0, 0.1, "sigma1");
+    // the Cholesky factor rows have unit norm in every draw
+    let l = samples.get("L_omega");
+    for dr in 0..l.draws {
+        let row = l.draw(0, dr);
+        assert!((row[2] * row[2] + row[3] * row[3] - 1.0).abs() < 1e-9);
+    }
+    assert!(samples.num_divergences() < 20);
+}
+
+// ---------------------------------------------------------------------------
+// Ordered latent vector: two-component Gaussian mixture with ordered means
+// (breaks label switching).
+// ---------------------------------------------------------------------------
+
+struct Mixture {
+    data: Vec<f64>,
+}
+
+impl Model for Mixture {
+    fn run<R: Real, H: Handler<R>>(&self, h: &mut H) {
+        let mu = h.sample_vec("mu", Ordered::new(Normal::new(0.0, 5.0).expand(2), 2));
+        let w = h.sample("w", Beta::new(2.0, 2.0));
+        let lw0 = w.ln();
+        let lw1 = (-w + 1.0).ln();
+        for (i, &x) in self.data.iter().enumerate() {
+            let a = lw0 + Normal::new(mu[0], 1.0).log_prob_data(&[x]);
+            let b = lw1 + Normal::new(mu[1], 1.0).log_prob_data(&[x]);
+            h.factor(&format!("lik_{i}"), pyroxide::ad::logsumexp(&[a, b]));
+        }
+    }
+}
+
+#[test]
+fn ordered_mixture_means() {
+    let mut rng = Xoshiro256PlusPlus::seed_from_u64(7);
+    let mut data = Vec::new();
+    for _ in 0..300 {
+        let c: f64 = rand::Rng::random(&mut rng);
+        let mu = if c < 0.4 { -2.0 } else { 3.0 };
+        data.push(Normal::<f64>::new(mu, 1.0).sample_vec(&mut rng)[0]);
+    }
+    let model = Mixture { data };
+    let samples = MCMC::new(HmcKernel::nuts(ModelPotential::new(&model)), 800, 1500)
+        .num_chains(2)
+        .run(0);
+    let mu = samples.get("mu");
+    // every draw is ordered
+    for c in 0..2 {
+        for d in 0..mu.draws {
+            let v = mu.draw(c, d);
+            assert!(v[0] < v[1]);
+        }
+    }
+    let m = mu.mean();
+    assert_close(m[0], -2.0, 0.3, "mu0");
+    assert_close(m[1], 3.0, 0.3, "mu1");
+    assert_close(samples.get("w").scalar_mean(), 0.4, 0.08, "w");
+    for s in samples.summary(0.9) {
+        for e in s.elements {
+            assert!(e.r_hat < 1.05, "{}: r_hat {}", s.name, e.r_hat);
+        }
+    }
+}

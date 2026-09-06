@@ -90,6 +90,11 @@ impl Array {
         &self.data[s..s + self.len]
     }
 
+    /// Overwrite one draw.
+    pub fn set_draw(&mut self, chain: usize, draw: usize, value: &[f64]) {
+        self.draw_mut(chain, draw).copy_from_slice(value);
+    }
+
     #[inline]
     fn draw_mut(&mut self, chain: usize, draw: usize) -> &mut [f64] {
         let s = (chain * self.draws + draw) * self.len;

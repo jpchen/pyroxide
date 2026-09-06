@@ -300,6 +300,110 @@ impl<'a, R: Real> Distribution<R> for MultivariateNormal<'a, R> {
     }
 }
 
+// ------------------------------------------------------------ LKJCholesky ---
+
+/// LKJ distribution over lower Cholesky factors of `k x k` correlation
+/// matrices (row-major), with density proportional to `det(L L^T)^(eta - 1)`.
+/// `eta = 1` is uniform over correlation matrices; `eta > 1` favors identity.
+///
+/// The concentration is a constant (not differentiated). Sampling uses the
+/// C-vine construction of Lewandowski, Kurowicka & Joe (2009).
+#[derive(Clone, Copy, Debug)]
+pub struct LKJCholesky {
+    pub dim: usize,
+    pub concentration: f64,
+    n: usize,
+}
+
+impl LKJCholesky {
+    pub fn new(dim: usize, concentration: f64) -> Self {
+        assert!(dim >= 2, "LKJCholesky needs dim >= 2");
+        assert!(concentration > 0.0, "LKJCholesky concentration must be positive");
+        LKJCholesky {
+            dim,
+            concentration,
+            n: 1,
+        }
+    }
+    /// Number of iid draws.
+    pub fn expand(mut self, n: usize) -> Self {
+        self.n = n;
+        self
+    }
+    /// Log normalizing constant (numpyro's `LKJCholesky.log_prob`).
+    fn log_normalizer(&self) -> f64 {
+        let dm1 = (self.dim - 1) as f64;
+        let alpha = self.concentration + 0.5 * dm1;
+        let denominator = ln_gamma(alpha) * dm1;
+        // multigammaln(alpha - 0.5, dim - 1)
+        let a = alpha - 0.5;
+        let p = self.dim - 1;
+        let mut numerator = (p * (p - 1)) as f64 / 4.0 * std::f64::consts::PI.ln();
+        for j in 0..p {
+            numerator += ln_gamma(a - 0.5 * j as f64);
+        }
+        let pi_constant = 0.5 * dm1 * std::f64::consts::PI.ln();
+        pi_constant + numerator - denominator
+    }
+}
+
+impl<R: Real> Distribution<R> for LKJCholesky {
+    fn len(&self) -> usize {
+        self.n * self.dim * self.dim
+    }
+    fn event_len(&self) -> usize {
+        self.dim * self.dim
+    }
+    fn support(&self) -> Support {
+        Support::CorrCholesky
+    }
+    fn log_prob_value(&self, x: Value<'_, R>) -> R {
+        let k = self.dim;
+        let norm = self.log_normalizer();
+        let mut total = 0.0;
+        let mut b = R::begin_node(self.n * (k - 1));
+        for e in 0..self.n {
+            for i in 1..k {
+                // order_i = 2 eta - 3 + k - i  (0-indexed diagonal i)
+                let order = 2.0 * self.concentration - 3.0 + (k - i) as f64;
+                let lii = x.get(e * k * k + i * k + i);
+                if lii <= 0.0 {
+                    total = f64::NEG_INFINITY;
+                    continue;
+                }
+                total += order * lii.ln();
+                if R::DIFFERENTIABLE {
+                    x.add_grad(&mut b, e * k * k + i * k + i, order / lii);
+                }
+            }
+            total -= norm;
+        }
+        b.finish(total)
+    }
+    fn sample(&self, rng: &mut dyn RngCore, out: &mut [f64]) {
+        let k = self.dim;
+        let marginal = self.concentration + 0.5 * (k - 2) as f64;
+        for e in 0..self.n {
+            let l = &mut out[e * k * k..(e + 1) * k * k];
+            l.iter_mut().for_each(|v| *v = 0.0);
+            l[0] = 1.0;
+            for i in 1..k {
+                let mut sum_sq = 0.0;
+                for j in 0..i {
+                    // partial correlation at tree level j: 2 Beta(b, b) - 1, b = eta + (k - 2 - j)/2
+                    let bconc = marginal - 0.5 * j as f64;
+                    let beta = rand_distr::Beta::new(bconc, bconc).expect("LKJ: invalid concentration");
+                    let z = 2.0 * beta.sample(rng) - 1.0;
+                    let lij = if j == 0 { z } else { z * (1.0 - sum_sq).sqrt() };
+                    l[i * k + j] = lij;
+                    sum_sq += lij * lij;
+                }
+                l[i * k + i] = (1.0 - sum_sq).max(0.0).sqrt();
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::testing::*;
@@ -360,6 +464,75 @@ mod tests {
             &[tril[0], 0.0, tril[2], tril[3]],
             1e-6,
         );
+    }
+
+    #[test]
+    fn lkj_cholesky_values_grads_and_sampling() {
+        // reference values from numpyro.distributions.LKJCholesky
+        let l3 = [
+            1.0,
+            0.0,
+            0.0,
+            0.291312612452,
+            0.9566279119,
+            0.0,
+            -0.604367777117,
+            0.302707412747,
+            0.736958487467,
+        ];
+        for (eta, expect) in [
+            (2.0, -1.358953077397629),
+            (0.7, -1.9188054592391546),
+            (1.0, -1.6406533610647958),
+        ] {
+            let lp: f64 = LKJCholesky::new(3, eta).log_prob_data(&l3);
+            assert!((lp - expect).abs() < 1e-8, "eta {eta}: {lp} vs {expect}");
+        }
+        let l4 = {
+            let mut v = vec![0.0; 16];
+            let rows = [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.291312612452, 0.9566279119, 0.0, 0.0],
+                [-0.604367777117, 0.302707412747, 0.736958487467, 0.0],
+                [0.800499021761, -0.118293752127, 0.029352741434, 0.586810293824],
+            ];
+            for i in 0..4 {
+                v[i * 4..(i + 1) * 4].copy_from_slice(&rows[i]);
+            }
+            v
+        };
+        let lp: f64 = LKJCholesky::new(4, 1.5).log_prob_data(&l4);
+        assert!((lp - (-2.795172178538924)).abs() < 1e-8, "{lp}");
+        // gradient wrt the matrix entries (only the diagonal matters)
+        check_grad(
+            |p| LKJCholesky::new(3, 2.0).log_prob(&p[0..9]),
+            |p| LKJCholesky::new(3, 2.0).log_prob(&p[0..9]),
+            &l3,
+            1e-6,
+        );
+        // sampling: off-diagonal correlations have Var = 1 / (2 eta + k - 1)
+        let mut r = Xoshiro256PlusPlus::seed_from_u64(5);
+        for (k, eta) in [(2usize, 2.0), (3, 1.0), (4, 0.8)] {
+            let d: &dyn Distribution<f64> = &LKJCholesky::new(k, eta);
+            let n = 40_000;
+            let mut m2 = 0.0;
+            for _ in 0..n {
+                let l = d.sample_vec(&mut r);
+                // correlation between the last two variables: row k-1 dot row k-2
+                let rho: f64 = (0..k).map(|j| l[(k - 1) * k + j] * l[(k - 2) * k + j]).sum();
+                m2 += rho * rho / n as f64;
+                for i in 0..k {
+                    let nrm: f64 = (0..k).map(|j| l[i * k + j] * l[i * k + j]).sum();
+                    assert!((nrm - 1.0).abs() < 1e-10);
+                }
+            }
+            let a = eta + 0.5 * (k - 2) as f64;
+            let expect = 1.0 / (2.0 * a + 1.0);
+            assert!(
+                (m2 - expect).abs() < 0.01,
+                "k={k} eta={eta}: E[rho^2] {m2} vs {expect}"
+            );
+        }
     }
 
     #[test]

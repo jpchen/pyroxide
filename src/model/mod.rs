@@ -41,7 +41,10 @@ use rand::RngCore;
 use crate::ad::Real;
 use crate::dist::{Distribution, Support};
 
+pub mod predictive;
 pub mod transform;
+
+pub use predictive::Predictive;
 
 /// The interface a model program uses to declare random variables.
 ///
@@ -315,6 +318,8 @@ impl Trace {
 pub struct Tracer<'a> {
     rng: &'a mut dyn RngCore,
     values: Option<&'a HashMap<String, Vec<f64>>>,
+    /// Sample observed sites instead of conditioning on the given data.
+    predictive: bool,
     pub trace: Trace,
 }
 
@@ -324,6 +329,18 @@ impl<'a> Tracer<'a> {
         Tracer {
             rng,
             values: None,
+            predictive: false,
+            trace: Trace::default(),
+        }
+    }
+
+    /// Predictive mode: latent sites are replayed from `values` (or drawn from
+    /// the prior) and observed sites are *sampled* from their distributions.
+    pub fn predictive(rng: &'a mut dyn RngCore, values: &'a HashMap<String, Vec<f64>>) -> Self {
+        Tracer {
+            rng,
+            values: Some(values),
+            predictive: true,
             trace: Trace::default(),
         }
     }
@@ -333,6 +350,7 @@ impl<'a> Tracer<'a> {
         Tracer {
             rng,
             values: Some(values),
+            predictive: false,
             trace: Trace::default(),
         }
     }
@@ -369,11 +387,16 @@ impl<'a> Handler<f64> for Tracer<'a> {
         value
     }
     fn observe<D: Distribution<f64>>(&mut self, name: &str, dist: D, value: &[f64]) {
-        let log_prob = dist.log_prob_data(value);
+        let value = if self.predictive {
+            dist.sample_vec(self.rng)
+        } else {
+            value.to_vec()
+        };
+        let log_prob = dist.log_prob_data(&value);
         self.trace.sites.push(TraceSite {
             name: name.to_string(),
             kind: SiteKind::Observed,
-            value: value.to_vec(),
+            value,
             log_prob,
             support: Some(dist.support()),
             event_len: dist.event_len(),

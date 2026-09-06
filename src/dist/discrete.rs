@@ -81,14 +81,7 @@ impl<'a, R: Real> Distribution<R> for Bernoulli<'a, R> {
                     ((-p).ln_1p(), [-1.0 / (1.0 - p)], 0.0)
                 }
             }),
-            ProbParam::Logits(l) => univariate([l], x, self.n, |[l], x| {
-                if x != 0.0 && x != 1.0 {
-                    return (f64::NEG_INFINITY, [0.0], 0.0);
-                }
-                // log p(x) = x*l - softplus(l); softplus and sigmoid share one exp
-                let (sp, sg) = softplus_sigmoid_f64(l);
-                (x * l - sp, [x - sg], 0.0)
-            }),
+            ProbParam::Logits(l) => bernoulli_logits(l, x, self.n),
         }
     }
     fn sample(&self, rng: &mut dyn RngCore, out: &mut [f64]) {
@@ -97,6 +90,28 @@ impl<'a, R: Real> Distribution<R> for Bernoulli<'a, R> {
             *o = if u < self.p.prob(i) { 1.0 } else { 0.0 };
         }
     }
+}
+
+/// Bernoulli(logits) over a plate.
+fn bernoulli_logits<R: Real>(l: Param<'_, R>, x: Value<'_, R>, n: usize) -> R {
+    let mut total = 0.0;
+    let mut b = R::begin_node(n + 1);
+    let mut g = super::ParamGrad::new(l);
+    for i in 0..n {
+        let (li, xi) = (l.get(i), x.get(i));
+        if xi != 0.0 && xi != 1.0 {
+            total = f64::NEG_INFINITY;
+            continue;
+        }
+        // log p(x) = x*l - softplus(l); softplus and sigmoid share one exp
+        let (sp, sg) = softplus_sigmoid_f64(li);
+        total += xi * li - sp;
+        if R::DIFFERENTIABLE {
+            g.add(&mut b, i, xi - sg);
+        }
+    }
+    g.finish(&mut b);
+    b.finish(total)
 }
 
 // ---------------------------------------------------------------- Binomial ---

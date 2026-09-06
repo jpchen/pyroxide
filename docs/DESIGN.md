@@ -267,7 +267,9 @@ slices (see `MultivariateNormal::new(loc, scale_tril)`).
 Normal, LogNormal, HalfNormal, Cauchy, HalfCauchy, StudentT, Uniform,
 Exponential, Gamma, InverseGamma, Beta, Pareto, Laplace, ImproperUniform;
 Bernoulli, Binomial (probs or logits), Poisson, Categorical (probs or logits);
-Dirichlet, MultivariateNormal. Every log density is checked against SciPy and
+Dirichlet, MultivariateNormal, LKJCholesky; and the `Ordered<D>` wrapper that
+restricts any vector distribution to increasing vectors (Stan's `ordered`).
+Every log density is checked against SciPy or numpyro reference values and
 every gradient against central finite differences.
 
 ---
@@ -304,9 +306,13 @@ one run under `LogDensity<Var>` plus one backward sweep.
 
 Latent supports map to `R^d` by standard bijections: `Positive` → `exp`,
 `Interval(a,b)` → affine sigmoid, `Simplex` → stick-breaking (k−1 parameters),
-`GreaterThan`/`LessThan` → shifted exp. The log-Jacobian is added by the
-handler, so the potential is the density of the *unconstrained* variable, as in
-Stan and NumPyro. Discrete distributions can be observed but not latent (the
+`GreaterThan`/`LessThan` → shifted exp, `OrderedVector` → cumulative exp,
+`CorrCholesky` → tanh partial correlations with signed stick-breaking (Stan's
+`cholesky_corr_constrain`; `k(k-1)/2` parameters for a `k × k` factor). The
+log-Jacobian is added by the handler, so the potential is the density of the
+*unconstrained* variable, as in Stan and NumPyro. Transforms are checked by
+round trip, by comparing log-Jacobians against numerical Jacobian determinants,
+and against numpyro's `CorrCholeskyTransform` / `OrderedTransform` values. Discrete distributions can be observed but not latent (the
 layout discovery panics with a clear message).
 
 ### 6.3 Static structure
@@ -409,6 +415,15 @@ Rubin and split R-hat, HPDI, and the summary table. The numerical tests
 
 ---
 
+### 8.1 Predictive simulation
+
+`Predictive::new(&model).posterior(&samples).run(seed)` replays each posterior
+draw through the model under `Tracer` in *predictive mode*: latent sites take
+the stored values, observed sites are **sampled** from their distributions, and
+deterministic sites are recomputed. Without `posterior` it draws from the prior
+(prior predictive checks). The result is a `Samples` with the same
+chains × draws structure, so the diagnostics and summaries apply unchanged.
+
 ## 9. Testing strategy
 
 Stochastic software needs layered tests:
@@ -504,12 +519,22 @@ summary:
 * **Documentation site**: mdBook (narrative docs + tutorials) with `cargo doc`
   API reference, deployed by GitHub Actions to GitHub Pages — free, fast, and
   Rust-native (this is what the Rust project itself uses).
-* **Performance**: SIMD-vectorized `exp`/`log` for the big plates (XLA's main
-  remaining advantage), a fused linear-predictor node for regressions, and
-  `f32` support via the `Real` trait.
-* **Modeling**: LKJ / correlation Cholesky and ordered-vector transforms,
-  truncated distributions, mixtures, a `Predictive` utility over `Tracer`,
-  `Samples` export to ArviZ's InferenceData (NetCDF/zarr).
+* **Performance**: we tried SIMD-vectorized `exp`/`log` for the big plates (a
+  branch-free fdlibm port that LLVM auto-vectorizes). On Apple Silicon it was a
+  wash: the system libm already evaluates `exp` in ~4.6 ns and `ln` in ~2.5 ns,
+  and the fused `softplus`/`sigmoid` pair took 7 ns scalar against 11 ns
+  vectorized, so the code was removed. Profiling the 1000-row logistic
+  regression gradient (28 µs) shows the time is tape traffic — 10 µs to push the
+  1000 linear-predictor nodes, 4 µs to build the likelihood node, 6.5 µs for the
+  backward sweep — not transcendentals. The next lever is *range parents*: a
+  node whose parents are a contiguous index range (as `matvec_const` outputs
+  are) needs no per-parent storage at all. `f32` support via the `Real` trait
+  is straightforward.
+* **Modeling**: truncated distributions, mixture distributions (mixtures are
+  already expressible with `factor` + `logsumexp`), `Samples` export to
+  ArviZ's InferenceData (NetCDF/zarr). LKJ / correlation-Cholesky and
+  ordered-vector transforms and the `Predictive` utility landed in the second
+  round (§5.3, §6.2, §8.1).
 * **Inference**: vectorized chains (an `R = [f64; N]` SIMD scalar would give
   `vmap` for free), SVI with autoguides (the handler layer already supports
   it), discrete-site enumeration (needs a shape system).

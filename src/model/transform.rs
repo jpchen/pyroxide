@@ -15,8 +15,20 @@ pub fn unconstrained_len(support: Support, constrained_len: usize, event_len: us
             debug_assert!(constrained_len.is_multiple_of(event_len));
             (constrained_len / event_len) * (event_len - 1)
         }
+        Support::CorrCholesky => {
+            // event is a k x k matrix; k(k-1)/2 free parameters
+            let k = corr_dim(event_len);
+            (constrained_len / event_len) * (k * (k - 1) / 2)
+        }
         _ => constrained_len,
     }
+}
+
+/// Side length `k` of a `k x k` event stored as `event_len = k*k` scalars.
+pub fn corr_dim(event_len: usize) -> usize {
+    let k = (event_len as f64).sqrt().round() as usize;
+    assert_eq!(k * k, event_len, "CorrCholesky event must be a square matrix");
+    k
 }
 
 /// Map unconstrained values `u` to constrained values (appended to `out`) and
@@ -44,6 +56,8 @@ pub fn to_constrained<R: Real>(support: Support, event_len: usize, u: &[R], out:
         Support::UnitInterval => interval(u, 0.0, 1.0, out),
         Support::Interval(lo, hi) => interval(u, lo, hi, out),
         Support::Simplex => simplex(u, event_len, out),
+        Support::OrderedVector => ordered(u, event_len, out),
+        Support::CorrCholesky => corr_cholesky(u, corr_dim(event_len), out),
         Support::Boolean | Support::NonNegativeInteger | Support::IntegerInterval(_, _) => {
             panic!("discrete latent sites are not supported by gradient-based inference; observe them or marginalize")
         }
@@ -72,8 +86,95 @@ pub fn to_unconstrained(support: Support, event_len: usize, x: &[f64]) -> Vec<f6
             }
             out
         }
+        Support::OrderedVector => {
+            let k = event_len;
+            let mut out = Vec::with_capacity(x.len());
+            for row in x.chunks(k) {
+                out.push(row[0]);
+                for i in 1..k {
+                    out.push((row[i] - row[i - 1]).ln());
+                }
+            }
+            out
+        }
+        Support::CorrCholesky => {
+            let k = corr_dim(event_len);
+            let mut out = Vec::with_capacity(x.len() / event_len * (k * (k - 1) / 2));
+            for l in x.chunks(event_len) {
+                for i in 1..k {
+                    let mut sum_sq = 0.0;
+                    for j in 0..i {
+                        let z = l[i * k + j] / (1.0 - sum_sq).sqrt();
+                        out.push(0.5 * ((1.0 + z) / (1.0 - z)).ln()); // atanh
+                        sum_sq += l[i * k + j] * l[i * k + j];
+                    }
+                }
+            }
+            out
+        }
         _ => panic!("discrete supports have no unconstraining transform"),
     }
+}
+
+/// Ordered vector: `x_0 = u_0`, `x_i = x_{i-1} + exp(u_i)`; log|J| = sum_{i>0} u_i.
+fn ordered<R: Real>(u: &[R], k: usize, out: &mut Vec<R>) -> R {
+    assert!(u.len().is_multiple_of(k), "ordered: bad unconstrained length");
+    let mut total = 0.0;
+    let mut b = R::begin_node(u.len());
+    for row in u.chunks(k) {
+        let mut prev = row[0];
+        out.push(prev);
+        for &ui in &row[1..] {
+            prev += ui.exp();
+            out.push(prev);
+            total += ui.value();
+            b.add(ui, 1.0);
+        }
+    }
+    b.finish(total)
+}
+
+/// Lower Cholesky factor of a correlation matrix from `k(k-1)/2` unconstrained
+/// values (Stan's `cholesky_corr_constrain`): `z = tanh(u)` are partial
+/// correlations, filled row by row with signed stick breaking. Output is the
+/// row-major `k x k` matrix.
+/// log|J| = sum log(1 - z^2) + sum_{i, 1<=j<i} 0.5 log(1 - sum_{l<j} L_il^2).
+fn corr_cholesky<R: Real>(u: &[R], k: usize, out: &mut Vec<R>) -> R {
+    let m = k * (k - 1) / 2;
+    assert!(m > 0, "corr_cholesky: dimension must be >= 2");
+    assert!(
+        u.len().is_multiple_of(m),
+        "corr_cholesky: bad unconstrained length"
+    );
+    let mut logdet = R::zero();
+    let n = u.len() / m;
+    for e in 0..n {
+        let uu = &u[e * m..(e + 1) * m];
+        let start = out.len();
+        out.resize(start + k * k, R::zero());
+        let l = &mut out[start..];
+        l[0] = R::one();
+        let mut idx = 0;
+        for i in 1..k {
+            let mut sum_sq = R::zero();
+            for j in 0..i {
+                let z = uu[idx].tanh();
+                idx += 1;
+                logdet += (-z * z + 1.0).ln();
+                let lij = if j == 0 {
+                    z
+                } else {
+                    let rem = -sum_sq + 1.0;
+                    logdet += rem.ln() * 0.5;
+                    z * rem.sqrt()
+                };
+                l[i * k + j] = lij;
+                sum_sq += lij * lij;
+            }
+            l[i * k + i] = (-sum_sq + 1.0).sqrt();
+        }
+    }
+    logdet
 }
 
 #[inline]
@@ -264,6 +365,56 @@ mod tests {
         // direct check of the closed form against the k-1 dimensional Jacobian
         check_logdet(Support::Simplex, 3, &[0.3, -1.2]);
         check_logdet(Support::Simplex, 4, &[0.3, -1.2, 0.8, 0.1, 0.2, -0.3]);
+    }
+
+    #[test]
+    fn ordered_and_corr_cholesky_match_numpyro() {
+        // OrderedTransform reference values
+        let u = [0.5, -1.0, 0.3];
+        let mut x = Vec::new();
+        let ld = to_constrained::<f64>(Support::OrderedVector, 3, &u, &mut x);
+        let expect = [0.5, 0.8678794411714423, 2.2177382487474455];
+        for (a, b) in x.iter().zip(&expect) {
+            assert!((a - b).abs() < 1e-12);
+        }
+        assert!((ld - (-0.7)).abs() < 1e-12);
+        roundtrip(Support::OrderedVector, 3, &expect);
+        check_logdet(Support::OrderedVector, 3, &u);
+
+        // CorrCholeskyTransform reference values (k = 3 and k = 4)
+        let y = [0.3, -0.7, 0.4];
+        let mut l = Vec::new();
+        let ld = to_constrained::<f64>(Support::CorrCholesky, 9, &y, &mut l);
+        let expect = [
+            1.0,
+            0.0,
+            0.0,
+            0.291312612452,
+            0.9566279119,
+            0.0,
+            -0.604367777117,
+            0.302707412747,
+            0.736958487467,
+        ];
+        for (a, b) in l.iter().zip(&expect) {
+            assert!((a - b).abs() < 1e-9, "{l:?}");
+        }
+        assert!((ld - (-0.9263991987030626)).abs() < 1e-9, "{ld}");
+        roundtrip(Support::CorrCholesky, 9, &l);
+        check_logdet(Support::CorrCholesky, 9, &y);
+        let y4 = [0.3, -0.7, 0.4, 1.1, -0.2, 0.05];
+        let mut l4 = Vec::new();
+        let ld4 = to_constrained::<f64>(Support::CorrCholesky, 16, &y4, &mut l4);
+        assert!((ld4 - (-3.0362469300853387)).abs() < 1e-9, "{ld4}");
+        assert!((l4[15] - 0.586810293824).abs() < 1e-9);
+        // rows have unit norm
+        for i in 0..4 {
+            let n: f64 = (0..4).map(|j| l4[i * 4 + j] * l4[i * 4 + j]).sum();
+            assert!((n - 1.0).abs() < 1e-12);
+        }
+        roundtrip(Support::CorrCholesky, 16, &l4);
+        check_logdet(Support::CorrCholesky, 16, &y4);
+        assert_eq!(unconstrained_len(Support::CorrCholesky, 32, 16), 12);
     }
 
     #[test]

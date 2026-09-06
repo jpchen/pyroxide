@@ -10,6 +10,11 @@ NumPyro's NUTS (iterative tree building, Stan windowed adaptation, dense/diagona
 mass matrices). No JIT compilation step, no Python, no runtime dependencies
 beyond `rand`, `rayon` and `rustfft`.
 
+* **Book**: user guide, design notes and API reference: `mdbook build book`
+  (then open `target/book/index.html`). `.github/workflows/docs.yml` deploys it
+  with the rustdoc reference to GitHub Pages; run it once the repository is
+  public (GitHub Pages is not available on private repositories under the free
+  plan).
 * **Design**: [`docs/DESIGN.md`](docs/DESIGN.md) — goals, the model-syntax
   decision, and every layer explained.
 * **Benchmarks**: [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md) — pyroxide vs
@@ -79,15 +84,15 @@ let samples = MCMC::new(HmcKernel::nuts(banana), 1000, 2000).run(1);
 | module | contents |
 |---|---|
 | `ad` | thread-local flat tape, `Real` trait for `f64` / `Var`, n-ary nodes with analytic partials |
-| `dist` | Normal, LogNormal, HalfNormal, Cauchy, HalfCauchy, StudentT, Uniform, Exponential, Gamma, InverseGamma, Beta, Pareto, Laplace, ImproperUniform, Bernoulli, Binomial, Poisson, Categorical, Dirichlet, MultivariateNormal |
-| `model` | `Model` / `Handler` traits, constraint transforms, layout discovery, log-density / tracing / postprocessing handlers |
+| `dist` | Normal, LogNormal, HalfNormal, Cauchy, HalfCauchy, StudentT, Uniform, Exponential, Gamma, InverseGamma, Beta, Pareto, Laplace, ImproperUniform, Bernoulli, Binomial, Poisson, Categorical, Dirichlet, MultivariateNormal, LKJCholesky, `Ordered<D>` |
+| `model` | `Model` / `Handler` traits, constraint transforms (positive, interval, simplex, ordered, correlation Cholesky), layout discovery, log-density / tracing / postprocessing handlers, `Predictive` |
 | `infer` | `Potential`, `HmcKernel` (NUTS + HMC), `MetropolisHastings`, warmup adaptation, `MCMC` driver with parallel chains, `Samples` |
 | `diagnostics` | ESS, R-hat, split R-hat, HPDI, autocorrelation, summary table |
 
 ## Tests
 
 ```
-cargo test            # 56 unit tests + 18 end-to-end posterior tests + doctests
+cargo test            # 61 unit tests + 20 end-to-end posterior tests + 8 doctests
 ```
 
 The end-to-end tests are ports of NumPyro's `test_mcmc.py`: they run full
@@ -105,8 +110,8 @@ both libraries and writes `benchmarks/RESULTS.md`.
 
 ## Status
 
-Early but complete for its scope: the two MCMC algorithms, 20 distributions, and
-the model layer are implemented and tested. Not yet: variational inference,
+Early but complete for its scope: the two MCMC algorithms, 21 distributions, the
+model layer and predictive simulation are implemented and tested. Not yet: variational inference,
 discrete latent enumeration, a broadcasting shape system, GPU. See the roadmap
 in `docs/DESIGN.md`.
 

@@ -364,6 +364,15 @@ pub trait Real:
     fn fma(self, m: Self, add: Self) -> Self {
         self * m + add
     }
+    /// Elementwise fused `coef[i] * x[i] + add[i]`, one node per element
+    /// (see [`mul_add_vec`]).
+    fn mul_add_vec(coef: &[Self], x: &[f64], add: &[Self]) -> Vec<Self> {
+        coef.iter()
+            .zip(x)
+            .zip(add)
+            .map(|((c, x), a)| c.mul_add(*x, *a))
+            .collect()
+    }
     /// Dot product with constant weights as one node (see [`dot_const`]).
     fn dot_const(xs: &[Self], w: &[f64]) -> Self {
         let total: f64 = xs.iter().zip(w).map(|(x, w)| x.value() * w).sum();
@@ -375,7 +384,9 @@ pub trait Real:
     }
     /// Row-major `n x k` constant matrix times `v` (see [`matvec_const`]).
     fn matvec_const(mat: &[f64], n: usize, k: usize, v: &[Self]) -> Vec<Self> {
-        (0..n).map(|i| Self::dot_const(v, &mat[i * k..(i + 1) * k])).collect()
+        (0..n)
+            .map(|i| Self::dot_const(v, &mat[i * k..(i + 1) * k]))
+            .collect()
     }
     /// Elementwise maximum by value (gradient flows to the larger argument).
     fn max(self, other: Self) -> Self {
@@ -646,6 +657,30 @@ impl Real for Var {
         });
         Var { val, idx }
     }
+    /// All `n` nodes are pushed under one tape borrow.
+    fn mul_add_vec(coef: &[Var], x: &[f64], add: &[Var]) -> Vec<Var> {
+        debug_assert!(coef.len() == x.len() && x.len() == add.len());
+        let n = x.len();
+        let mut out = Vec::with_capacity(n);
+        TAPE.with(|t| {
+            let mut t = t.borrow_mut();
+            t.parents.reserve(2 * n);
+            t.weights.reserve(2 * n);
+            t.starts.reserve(n);
+            for i in 0..n {
+                let idx = t.len() as u32;
+                t.parents.extend_from_slice(&[coef[i].idx, add[i].idx]);
+                t.weights.extend_from_slice(&[x[i], 1.0]);
+                let end = t.parents.len() as u32;
+                t.starts.push(end);
+                out.push(Var {
+                    val: coef[i].val * x[i] + add[i].val,
+                    idx,
+                });
+            }
+        });
+        out
+    }
     /// Single tape borrow, parents and weights pushed straight onto the tape.
     fn dot_const(xs: &[Var], w: &[f64]) -> Var {
         debug_assert_eq!(xs.len(), w.len());
@@ -847,6 +882,16 @@ pub fn dot_const<R: Real>(xs: &[R], w: &[f64]) -> R {
     R::dot_const(xs, w)
 }
 
+/// Elementwise `coef[i] * x[i] + add[i]` (a linear predictor with a per-row
+/// constant covariate), one node per element pushed under a single tape borrow.
+pub fn mul_add_vec<R: Real>(coef: &[R], x: &[f64], add: &[R]) -> Vec<R> {
+    assert!(
+        coef.len() == x.len() && x.len() == add.len(),
+        "mul_add_vec: length mismatch"
+    );
+    R::mul_add_vec(coef, x, add)
+}
+
 /// Dot product of two differentiable vectors, as one node.
 pub fn dot<R: Real>(xs: &[R], ys: &[R]) -> R {
     debug_assert_eq!(xs.len(), ys.len());
@@ -985,11 +1030,21 @@ mod tests {
         check_grad(
             |x| {
                 let mv = matvec_const(&w, 2, 3, &x[0..3]);
-                x[0].mul_add(1.5, x[1]) + x[1].fma(x[2], x[0]) + mv[0] * mv[1] + dot_const(&x[0..3], &w[3..6])
+                let mav = mul_add_vec(&x[0..2], &w[0..2], &x[1..3]);
+                x[0].mul_add(1.5, x[1])
+                    + x[1].fma(x[2], x[0])
+                    + mv[0] * mv[1]
+                    + dot_const(&x[0..3], &w[3..6])
+                    + mav[0] * mav[1]
             },
             |x| {
                 let mv = matvec_const(&w, 2, 3, &x[0..3]);
-                x[0].mul_add(1.5, x[1]) + x[1].fma(x[2], x[0]) + mv[0] * mv[1] + dot_const(&x[0..3], &w[3..6])
+                let mav = mul_add_vec(&x[0..2], &w[0..2], &x[1..3]);
+                x[0].mul_add(1.5, x[1])
+                    + x[1].fma(x[2], x[0])
+                    + mv[0] * mv[1]
+                    + dot_const(&x[0..3], &w[3..6])
+                    + mav[0] * mav[1]
             },
             &[0.3, -0.7, 1.1],
         );
