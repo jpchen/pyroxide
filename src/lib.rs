@@ -13,7 +13,9 @@
 //! See `docs/DESIGN.md` in the repository for the design rationale.
 
 pub mod ad;
+pub mod diagnostics;
 pub mod dist;
+pub mod infer;
 pub mod linalg;
 pub mod model;
 pub mod special;
@@ -24,5 +26,6 @@ pub use ad::{Real, Var};
 pub mod prelude {
     pub use crate::ad::{Real, Var};
     pub use crate::dist::*;
+    pub use crate::infer::{FnPotential, HmcKernel, InitStrategy, MetropolisHastings, ModelPotential, Potential, Samples, MCMC};
     pub use crate::model::{Handler, Model};
 }

@@ -16,10 +16,10 @@
 //! ```
 //! use pyroxide::dist::{Normal, Distribution};
 //! // a plate of 3 independent normals with a shared scale
-//! let d = Normal::new(&[0.0, 1.0, 2.0][..], 1.0);
+//! let d = Normal::<f64>::new(&[0.0, 1.0, 2.0][..], 1.0);
 //! assert_eq!(d.len(), 3);
 //! // a plate of 10 iid standard normals
-//! let d = Normal::new(0.0, 1.0).expand(10);
+//! let d = Normal::<f64>::new(0.0, 1.0).expand(10);
 //! assert_eq!(d.len(), 10);
 //! let lp: f64 = d.log_prob_data(&[0.0; 10]);
 //! assert!((lp - 10.0 * (-0.5 * (2.0 * std::f64::consts::PI).ln())).abs() < 1e-12);
