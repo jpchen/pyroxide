@@ -21,6 +21,9 @@ beyond `rand`, `rayon` and `rustfft`.
   and SMC without coroutines.
 * **Parity**: [`docs/PARITY.md`](docs/PARITY.md) — feature-by-feature status
   against NumPyro with priorities.
+* **Comparison**: [`docs/COMPARISON.md`](docs/COMPARISON.md) — pyroxide vs
+  NumPyro, Pyro and Stan: modeling API, algorithms, distributions, performance,
+  ecosystem, and when to pick which.
 * **Benchmarks**: [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md) — pyroxide vs
   NumPyro on the same models. On an M4 Max, single chain, float64, 1000 warmup +
   1000 samples: NUTS is 10–68× faster than NumPyro's compiled sampler on eight
